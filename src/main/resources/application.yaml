@@ -1,0 +1,4 @@
+# Application settings.
+spring:
+  application:
+    name: team-chest
