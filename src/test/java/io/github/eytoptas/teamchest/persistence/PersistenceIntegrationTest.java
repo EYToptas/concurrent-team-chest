@@ -36,10 +36,10 @@ import org.springframework.transaction.support.TransactionTemplate;
 @Import(TestcontainersConfiguration.class)
 public abstract class PersistenceIntegrationTest {
 
-    static final Instant CAMPAIGN_START = Instant.parse("2026-10-01T00:00:00Z");
-    static final Instant CAMPAIGN_END = Instant.parse("2026-10-31T00:00:00Z");
-    public static final Instant NOW = Instant.parse("2026-10-18T12:00:00.123456Z");
-    static final String REWARD = "{\"coins\": 500}";
+    protected static final Instant CAMPAIGN_START = Instant.parse("2026-10-01T00:00:00Z");
+    protected static final Instant CAMPAIGN_END = Instant.parse("2026-10-31T00:00:00Z");
+    protected static final Instant NOW = Instant.parse("2026-10-18T12:00:00.123456Z");
+    protected static final String REWARD = "{\"coins\": 500}";
 
     private static final Duration WAIT_LIMIT = Duration.ofSeconds(10);
 
@@ -62,12 +62,12 @@ public abstract class PersistenceIntegrationTest {
     private ExecutorService executor;
 
     @BeforeEach
-    void startExecutor() {
-        executor = Executors.newFixedThreadPool(4);
+    protected void startExecutor() {
+        executor = Executors.newFixedThreadPool(8);
     }
 
     @AfterEach
-    void stopExecutorAndDeleteTestData() throws InterruptedException {
+    protected void stopExecutorAndDeleteTestData() throws InterruptedException {
         executor.shutdownNow();
         executor.awaitTermination(WAIT_LIMIT.toSeconds(), TimeUnit.SECONDS);
         for (Long campaignId : createdCampaignIds) {
@@ -95,6 +95,10 @@ public abstract class PersistenceIntegrationTest {
         });
     }
 
+    protected <T> Future<T> async(Supplier<T> work) {
+        return executor.submit(() -> work.get());
+    }
+
     protected <T> Future<T> inTransactionAsync(Supplier<T> work) {
         return executor.submit(() -> inTransaction(work));
     }
@@ -104,9 +108,13 @@ public abstract class PersistenceIntegrationTest {
     }
 
     protected Campaign createCampaign() {
+        return createCampaign(CAMPAIGN_START, CAMPAIGN_END);
+    }
+
+    protected Campaign createCampaign(Instant startsAt, Instant endsAt) {
         Campaign campaign = inTransaction(() -> {
             Campaign saved = campaigns.save(new Campaign(
-                    "test-" + UUID.randomUUID(), 30, 300, REWARD, CAMPAIGN_START, CAMPAIGN_END));
+                    "test-" + UUID.randomUUID(), 30, 300, REWARD, startsAt, endsAt));
             cursors.save(TeamAssignmentCursor.forCampaign(saved));
             return saved;
         });

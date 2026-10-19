@@ -22,3 +22,11 @@ spring:
 
   flyway:
     enabled: true
+
+team-chest:
+  campaign:
+    claim-grace-period: 7d
+  transaction:
+    max-attempts: 3
+    min-backoff: 5ms
+    max-backoff: 25ms
