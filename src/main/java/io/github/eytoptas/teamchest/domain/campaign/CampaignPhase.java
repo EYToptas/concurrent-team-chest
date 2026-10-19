@@ -28,4 +28,8 @@ public enum CampaignPhase {
     public boolean allowsClaim() {
         return claimAllowed;
     }
+
+    public boolean isOpen() {
+        return this == ACTIVE || this == CLAIM_ONLY;
+    }
 }

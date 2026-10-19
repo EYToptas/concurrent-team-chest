@@ -30,3 +30,7 @@ team-chest:
     max-attempts: 3
     min-backoff: 5ms
     max-backoff: 25ms
+  security:
+    jwt:
+      audience: team-chest-api
+      clock-skew: 30s

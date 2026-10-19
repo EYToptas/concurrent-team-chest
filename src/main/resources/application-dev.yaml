@@ -1,0 +1,6 @@
+# Development profile with a local token issuer; not for production.
+team-chest:
+  security:
+    jwt:
+      issuer: https://auth.team-chest.dev
+      dev-token-ttl: 1h

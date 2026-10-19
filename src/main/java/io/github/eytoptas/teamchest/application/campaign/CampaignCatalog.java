@@ -35,7 +35,7 @@ public class CampaignCatalog {
 
     public Campaign requireCurrentCampaign(Predicate<CampaignPhase> operationAllowed, Instant now) {
         List<Campaign> open = campaigns.findByEndsAtAfter(now.minus(claimGracePeriod)).stream()
-                .filter(campaign -> isOpen(campaign.phaseAt(now, claimGracePeriod)))
+                .filter(campaign -> campaign.phaseAt(now, claimGracePeriod).isOpen())
                 .toList();
         if (open.size() > 1) {
             throw new IllegalStateException("Overlapping campaigns are not supported: "
@@ -49,6 +49,14 @@ public class CampaignCatalog {
         return current;
     }
 
+    public CampaignPhase phaseOf(Campaign campaign, Instant now) {
+        return campaign.phaseAt(now, claimGracePeriod);
+    }
+
+    public Instant claimDeadline(Campaign campaign) {
+        return campaign.claimWindowEnd(claimGracePeriod);
+    }
+
     private Campaign findById(long campaignId) {
         Campaign cached = campaignsById.get(campaignId);
         if (cached != null) {
@@ -57,9 +65,5 @@ public class CampaignCatalog {
         Campaign loaded = campaigns.findById(campaignId).orElseThrow(() -> new CampaignNotFoundException(campaignId));
         campaignsById.putIfAbsent(campaignId, loaded);
         return loaded;
-    }
-
-    private static boolean isOpen(CampaignPhase phase) {
-        return phase != CampaignPhase.NOT_STARTED && phase != CampaignPhase.CLOSED;
     }
 }

@@ -69,6 +69,14 @@ class CampaignTest {
         }
     }
 
+    @Test
+    void onlyActiveAndClaimOnlyPhasesAreOpen() {
+        assertThat(CampaignPhase.ACTIVE.isOpen()).isTrue();
+        assertThat(CampaignPhase.CLAIM_ONLY.isOpen()).isTrue();
+        assertThat(CampaignPhase.NOT_STARTED.isOpen()).isFalse();
+        assertThat(CampaignPhase.CLOSED.isOpen()).isFalse();
+    }
+
     @ParameterizedTest
     @ValueSource(ints = {0, -1, Short.MAX_VALUE + 1})
     void rejectsInvalidTeamCapacity(int capacity) {
