@@ -3,6 +3,7 @@ package io.github.eytoptas.teamchest.application.query;
 import io.github.eytoptas.teamchest.domain.campaign.CampaignPhase;
 import java.time.Instant;
 import java.util.List;
+import java.util.Optional;
 
 public record TeamOverview(CampaignSummary campaign, TeamStanding team, MemberStanding me, boolean canClaim) {
 
@@ -19,6 +20,10 @@ public record TeamOverview(CampaignSummary campaign, TeamStanding team, MemberSt
 
         public TeamStanding {
             members = List.copyOf(members);
+        }
+
+        public Optional<MemberStanding> member(String userId) {
+            return members.stream().filter(member -> member.userId().equals(userId)).findFirst();
         }
     }
 

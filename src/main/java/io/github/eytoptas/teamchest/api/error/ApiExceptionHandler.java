@@ -57,6 +57,16 @@ public class ApiExceptionHandler {
         return respond(ErrorResponse.of(ErrorCode.IDEMPOTENCY_KEY_REUSED, e.getMessage()));
     }
 
+    @ExceptionHandler(RateLimitExceededException.class)
+    ResponseEntity<ErrorResponse> rateLimited(RateLimitExceededException e) {
+        long retryAfterSeconds = e.retryAfterSeconds();
+        ErrorResponse body = ErrorResponse.of(ErrorCode.RATE_LIMITED, e.getMessage(),
+                Map.of("operation", e.operation().key(), "retryAfterSeconds", retryAfterSeconds));
+        return ResponseEntity.status(body.status())
+                .header(HttpHeaders.RETRY_AFTER, Long.toString(retryAfterSeconds))
+                .body(body);
+    }
+
     @ExceptionHandler(ConcurrencyRetriesExhaustedException.class)
     ResponseEntity<ErrorResponse> busy(ConcurrencyRetriesExhaustedException e) {
         ErrorResponse body = ErrorResponse.of(ErrorCode.SERVICE_BUSY, "The request could not be completed, retry later");

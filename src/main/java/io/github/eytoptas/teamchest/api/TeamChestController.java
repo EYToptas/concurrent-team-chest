@@ -1,6 +1,7 @@
 package io.github.eytoptas.teamchest.api;
 
 import io.github.eytoptas.teamchest.api.error.RejectedRequestException;
+import io.github.eytoptas.teamchest.api.ratelimit.RateLimited;
 import io.github.eytoptas.teamchest.api.request.ClaimRequest;
 import io.github.eytoptas.teamchest.api.request.ProgressRequest;
 import io.github.eytoptas.teamchest.api.response.ClaimResponse;
@@ -15,6 +16,7 @@ import io.github.eytoptas.teamchest.application.progress.ProgressCommand;
 import io.github.eytoptas.teamchest.application.progress.ProgressResult;
 import io.github.eytoptas.teamchest.application.progress.ProgressService;
 import io.github.eytoptas.teamchest.application.query.TeamQueryService;
+import io.github.eytoptas.teamchest.application.ratelimit.RateLimitedOperation;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Pattern;
 import org.springframework.http.MediaType;
@@ -45,11 +47,13 @@ public class TeamChestController {
     }
 
     @PostMapping("/join")
+    @RateLimited(RateLimitedOperation.JOIN)
     public JoinResponse join(@CurrentUserId String userId) {
         return JoinResponse.from(joinService.join(userId));
     }
 
     @PostMapping(path = "/progress", consumes = MediaType.APPLICATION_JSON_VALUE)
+    @RateLimited(RateLimitedOperation.PROGRESS)
     public ProgressResponse progress(
             @CurrentUserId String userId,
             @RequestHeader(IDEMPOTENCY_KEY) @Pattern(regexp = IDEMPOTENCY_KEY_PATTERN, message = IDEMPOTENCY_KEY_MESSAGE)
@@ -65,6 +69,7 @@ public class TeamChestController {
     }
 
     @PostMapping(path = "/claim", consumes = MediaType.APPLICATION_JSON_VALUE)
+    @RateLimited(RateLimitedOperation.CLAIM)
     public ClaimResponse claim(
             @CurrentUserId String userId,
             @RequestHeader(IDEMPOTENCY_KEY) @Pattern(regexp = IDEMPOTENCY_KEY_PATTERN, message = IDEMPOTENCY_KEY_MESSAGE)
@@ -80,6 +85,7 @@ public class TeamChestController {
     }
 
     @GetMapping("/get")
+    @RateLimited(RateLimitedOperation.GET)
     public TeamOverviewResponse get(@CurrentUserId String userId) {
         return TeamOverviewResponse.from(teamQueryService.overviewFor(userId));
     }

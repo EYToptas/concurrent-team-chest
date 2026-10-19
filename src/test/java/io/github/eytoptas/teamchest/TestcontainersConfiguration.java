@@ -1,19 +1,59 @@
 package io.github.eytoptas.teamchest;
 
+import org.springframework.boot.data.redis.autoconfigure.DataRedisConnectionDetails;
+import org.springframework.boot.jdbc.autoconfigure.JdbcConnectionDetails;
 import org.springframework.boot.test.context.TestConfiguration;
-import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
 import org.springframework.context.annotation.Bean;
+import org.testcontainers.containers.GenericContainer;
+import org.testcontainers.lifecycle.Startables;
 import org.testcontainers.mysql.MySQLContainer;
 import org.testcontainers.utility.DockerImageName;
 
 @TestConfiguration(proxyBeanMethods = false)
 public class TestcontainersConfiguration {
 
+	private static final int REDIS_PORT = 6379;
 	private static final MySQLContainer MYSQL = new MySQLContainer(DockerImageName.parse("mysql:8.4"));
+	private static final GenericContainer<?> REDIS =
+			new GenericContainer<>(DockerImageName.parse("redis:7.4-alpine")).withExposedPorts(REDIS_PORT);
+
+	static {
+		Startables.deepStart(MYSQL, REDIS).join();
+	}
+
+	public static GenericContainer<?> redis() {
+		return REDIS;
+	}
 
 	@Bean
-	@ServiceConnection
-	MySQLContainer mysqlContainer() {
-		return MYSQL;
+	JdbcConnectionDetails mysqlConnectionDetails() {
+		return new JdbcConnectionDetails() {
+
+			@Override
+			public String getUsername() {
+				return MYSQL.getUsername();
+			}
+
+			@Override
+			public String getPassword() {
+				return MYSQL.getPassword();
+			}
+
+			@Override
+			public String getJdbcUrl() {
+				return MYSQL.getJdbcUrl();
+			}
+		};
+	}
+
+	@Bean
+	DataRedisConnectionDetails redisConnectionDetails() {
+		return new DataRedisConnectionDetails() {
+
+			@Override
+			public Standalone getStandalone() {
+				return Standalone.of(REDIS.getHost(), REDIS.getMappedPort(REDIS_PORT));
+			}
+		};
 	}
 }

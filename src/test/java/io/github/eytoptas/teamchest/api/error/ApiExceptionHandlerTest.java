@@ -12,8 +12,10 @@ import io.github.eytoptas.teamchest.application.campaign.CampaignNotActiveExcept
 import io.github.eytoptas.teamchest.application.campaign.CampaignNotFoundException;
 import io.github.eytoptas.teamchest.application.campaign.NoActiveCampaignException;
 import io.github.eytoptas.teamchest.application.idempotency.IdempotencyKeyReuseException;
+import io.github.eytoptas.teamchest.application.ratelimit.RateLimitedOperation;
 import io.github.eytoptas.teamchest.application.transaction.ConcurrencyRetriesExhaustedException;
 import io.github.eytoptas.teamchest.domain.campaign.CampaignPhase;
+import java.time.Duration;
 import org.junit.jupiter.api.Test;
 import org.springframework.dao.CannotAcquireLockException;
 import org.springframework.http.HttpHeaders;
@@ -35,6 +37,17 @@ class ApiExceptionHandlerTest {
                 .andExpect(header().string(HttpHeaders.RETRY_AFTER, "1"))
                 .andExpect(jsonPath("$.status").value(503))
                 .andExpect(jsonPath("$.code").value("SERVICE_BUSY"));
+    }
+
+    @Test
+    void rateLimitedIs429WithRetryAfterInWholeSeconds() throws Exception {
+        mvc.perform(get("/rate-limited"))
+                .andExpect(status().isTooManyRequests())
+                .andExpect(header().string(HttpHeaders.RETRY_AFTER, "2"))
+                .andExpect(jsonPath("$.status").value(429))
+                .andExpect(jsonPath("$.code").value("RATE_LIMITED"))
+                .andExpect(jsonPath("$.details.operation").value("progress"))
+                .andExpect(jsonPath("$.details.retryAfterSeconds").value(2));
     }
 
     @Test
@@ -83,6 +96,11 @@ class ApiExceptionHandlerTest {
         @GetMapping("/busy")
         void busy() {
             throw new ConcurrencyRetriesExhaustedException(3, new CannotAcquireLockException("deadlock"));
+        }
+
+        @GetMapping("/rate-limited")
+        void rateLimited() {
+            throw new RateLimitExceededException(RateLimitedOperation.PROGRESS, Duration.ofMillis(1_500));
         }
 
         @GetMapping("/boom")
