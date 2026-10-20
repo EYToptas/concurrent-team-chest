@@ -94,32 +94,6 @@ class TeamRepositoryTests extends PersistenceIntegrationTest {
     }
 
     @Test
-    void completionCheckDoesNotWaitForTheTeamLock() throws Exception {
-        Campaign campaign = createCampaign();
-        Team team = createTeam(campaign);
-        addMember(team, "alice");
-        CountDownLatch firstHoldsLock = new CountDownLatch(1);
-        CountDownLatch releaseFirst = new CountDownLatch(1);
-        Future<Void> holder = inTransactionAsync(() -> {
-            teams.findByIdForUpdate(team.getId()).orElseThrow();
-            firstHoldsLock.countDown();
-            await(releaseFirst);
-            return null;
-        });
-        await(firstHoldsLock);
-
-        try {
-            assertThat(result(inTransactionAsync(() -> teams.isCompleted(team.getId())))).isFalse();
-        } finally {
-            releaseFirst.countDown();
-            result(holder);
-        }
-
-        applyPoints(team, "alice", 300);
-        assertThat(teams.isCompleted(team.getId())).isTrue();
-    }
-
-    @Test
     void rankingOrdersByPointsThenByWhoReachedThemFirst() {
         Campaign campaign = createCampaign();
         Team team = createTeam(campaign);

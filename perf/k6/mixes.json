@@ -1,0 +1,25 @@
+{
+  "comment": "Share of requests per endpoint, in percent; each mix adds up to 100. Read by perf/k6/load.js (the load) and perf/run.ps1 (data sizing).",
+  "mixes": {
+    "read-heavy": {
+      "shares": { "get": 90, "progress": 9, "join": 1, "claim": 0 },
+      "description": "players mostly looking at their team"
+    },
+    "mixed": {
+      "shares": { "get": 70, "progress": 25, "join": 4, "claim": 1 },
+      "description": "a typical session"
+    },
+    "write-heavy": {
+      "shares": { "get": 30, "progress": 62, "join": 5, "claim": 3 },
+      "description": "stress for row locks, idempotency inserts and cache invalidation"
+    },
+    "get-only": {
+      "shares": { "get": 100, "progress": 0, "join": 0, "claim": 0 },
+      "description": "the read path alone; without writes no team is invalidated"
+    },
+    "join-only": {
+      "shares": { "get": 0, "progress": 0, "join": 100, "claim": 0 },
+      "description": "the join path alone: how many joins per second the join cursor row allows"
+    }
+  }
+}

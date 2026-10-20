@@ -17,6 +17,15 @@ public interface TeamMemberRepository extends Repository<TeamMember, Long> {
     @Query("select m.teamId from TeamMember m where m.campaignId = :campaignId and m.userId = :userId")
     Optional<Long> findTeamIdByCampaignIdAndUserId(@Param("campaignId") Long campaignId, @Param("userId") String userId);
 
+    @Query("""
+            select new io.github.eytoptas.teamchest.persistence.team.MemberTeamState(m.teamId, t.completedAt)
+            from TeamMember m
+            join Team t on t.id = m.teamId and t.campaignId = m.campaignId
+            where m.campaignId = :campaignId and m.userId = :userId
+            """)
+    Optional<MemberTeamState> findTeamStateByCampaignIdAndUserId(@Param("campaignId") Long campaignId,
+                                                                 @Param("userId") String userId);
+
     Optional<TeamMember> findByCampaignIdAndUserId(Long campaignId, String userId);
 
     @Modifying(flushAutomatically = true)

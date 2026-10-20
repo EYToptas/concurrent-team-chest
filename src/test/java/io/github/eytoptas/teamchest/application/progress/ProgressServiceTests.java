@@ -10,11 +10,15 @@ import io.github.eytoptas.teamchest.application.idempotency.IdempotencyKeyReuseE
 import io.github.eytoptas.teamchest.application.idempotency.IdempotentRequest;
 import io.github.eytoptas.teamchest.domain.campaign.Campaign;
 import io.github.eytoptas.teamchest.domain.team.Team;
+import io.github.eytoptas.teamchest.domain.team.TeamMember;
+import io.github.eytoptas.teamchest.persistence.RecordedSql;
 import io.github.eytoptas.teamchest.persistence.idempotency.IdempotencyRecord;
 import io.github.eytoptas.teamchest.persistence.idempotency.IdempotentOperation;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Future;
 import org.junit.jupiter.api.Test;
 
@@ -125,6 +129,86 @@ class ProgressServiceTests extends ServiceIntegrationTest {
                 .hasSize(results.size() - applied.size());
         assertThat(teamPoints(teamId)).isEqualTo(300).isEqualTo(memberPointSum(teamId));
         assertThat(applied).extracting(ProgressResult.Applied::version).doesNotHaveDuplicates();
+    }
+
+    @Test
+    void appliedProgressReadsTheTeamStateOnceBeforeTheLock() {
+        Campaign campaign = activeCampaign();
+        long teamId = joinService.join("alice").teamId();
+
+        List<String> statements = RecordedSql.during(() -> progress(campaign, "alice", 6)).stream()
+                .map(sql -> sql.toLowerCase(Locale.ROOT)).toList();
+
+        int lock = 0;
+        while (lock < statements.size() && !statements.get(lock).contains(" for update")) {
+            lock++;
+        }
+        assertThat(statements).hasSize(8);
+        assertThat(statements.subList(0, lock)).satisfiesExactly(
+                replay -> assertThat(replay).startsWith("select").contains("from idempotency_record"),
+                insert -> assertThat(insert).startsWith("insert into idempotency_record"),
+                state -> assertThat(state).startsWith("select").contains("from team_member").contains("join team"));
+        assertThat(statements.get(lock)).contains("from team ");
+        assertThat(statements.subList(lock + 1, statements.size()))
+                .filteredOn(sql -> sql.startsWith("select")).singleElement()
+                .satisfies(member -> assertThat(member).contains("from team_member"));
+        assertThat(statements.subList(lock + 1, statements.size()))
+                .filteredOn(sql -> sql.startsWith("update")).hasSize(3);
+        assertThat(teamPoints(teamId)).isEqualTo(6).isEqualTo(memberPointSum(teamId));
+    }
+
+    @Test
+    void progressOfACompletedTeamDoesNotQueueOnItsLock() throws Exception {
+        Campaign campaign = activeCampaign();
+        Team team = completedTeamWith(campaign, "alice", "bob");
+        CountDownLatch holdsLock = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        Future<Void> holder = inTransactionAsync(() -> {
+            teams.findByIdForUpdate(team.getId()).orElseThrow();
+            holdsLock.countDown();
+            await(release);
+            return null;
+        });
+        await(holdsLock);
+
+        try {
+            assertThat(result(async(() -> progress(campaign, "bob", 5))))
+                    .isEqualTo(new ProgressResult.TeamAlreadyCompleted(campaign.getId(), team.getId(), 300));
+        } finally {
+            release.countDown();
+            result(holder);
+        }
+        assertThat(teamPoints(team.getId())).isEqualTo(300).isEqualTo(memberPointSum(team.getId()));
+    }
+
+    @Test
+    void completionWhileWaitingForTheLockIsDecidedUnderTheLock() throws Exception {
+        Campaign campaign = activeCampaign();
+        Team team = teamWith(campaign, "alice", "bob");
+        CountDownLatch holdsLock = new CountDownLatch(1);
+        CountDownLatch complete = new CountDownLatch(1);
+        Future<Void> completer = inTransactionAsync(() -> {
+            Team locked = teams.findByIdForUpdate(team.getId()).orElseThrow();
+            holdsLock.countDown();
+            await(complete);
+            TeamMember alice = members.findByCampaignIdAndUserId(campaign.getId(), "alice").orElseThrow();
+            locked.applyPoints(alice, 300, Instant.now());
+            return null;
+        });
+        await(holdsLock);
+
+        Future<ProgressResult> late = async(() -> progress(campaign, "bob", 5));
+        try {
+            awaitBlockedStatements("%from team %for update%", 1);
+        } finally {
+            complete.countDown();
+        }
+        result(completer);
+
+        assertThat(result(late)).isEqualTo(new ProgressResult.TeamAlreadyCompleted(campaign.getId(), team.getId(), 300));
+        assertThat(teamPoints(team.getId())).isEqualTo(300).isEqualTo(memberPointSum(team.getId()));
+        assertThat(jdbc.queryForObject("SELECT points FROM team_member WHERE campaign_id = ? AND user_id = 'bob'",
+                Integer.class, campaign.getId())).isZero();
     }
 
     @Test

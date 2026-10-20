@@ -83,3 +83,9 @@ application-local.properties
 application-secret*.yml
 application-secret*.yaml
 application-secret*.properties
+
+.secrets/
+perf/.tokens/
+perf/results/
+
+!.env.example

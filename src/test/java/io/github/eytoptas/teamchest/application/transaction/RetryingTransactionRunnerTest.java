@@ -19,7 +19,7 @@ class RetryingTransactionRunnerTest {
 
     private final CountingTransactionManager transactionManager = new CountingTransactionManager();
     private final RetryingTransactionRunner runner = new RetryingTransactionRunner(transactionManager,
-            new TeamChestProperties(new TeamChestProperties.CampaignSettings(Duration.ofDays(7)),
+            new TeamChestProperties(new TeamChestProperties.CampaignSettings(Duration.ofDays(7), Duration.ZERO),
                     new TeamChestProperties.TransactionSettings(3, Duration.ZERO, Duration.ZERO)));
 
     @Test

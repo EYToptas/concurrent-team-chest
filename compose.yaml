@@ -1,0 +1,79 @@
+# Local stack: MySQL, Redis and the application.
+name: team-chest
+
+services:
+
+  mysql:
+    image: mysql:8.4
+    environment:
+      MYSQL_DATABASE: teamchest
+      MYSQL_USER: teamchest
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?set MYSQL_PASSWORD in .env}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?set MYSQL_ROOT_PASSWORD in .env}
+    command: ["--skip-name-resolve", "--max-connections=200", "--innodb-log-writer-threads=OFF"]
+    volumes:
+      - mysql-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "MYSQL_PWD=\"$$MYSQL_ROOT_PASSWORD\" mysqladmin ping -h 127.0.0.1 -uroot --silent"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+
+  redis:
+    image: redis:7.4-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no",
+              "--maxmemory", "256mb", "--maxmemory-policy", "volatile-lru"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  app:
+    build: .
+    image: team-chest:local
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      SPRING_PROFILES_ACTIVE: prod
+      SPRING_DATASOURCE_URL: jdbc:mysql://mysql:3306/teamchest
+      SPRING_DATASOURCE_USERNAME: teamchest
+      SPRING_DATASOURCE_PASSWORD: ${MYSQL_PASSWORD:?set MYSQL_PASSWORD in .env}
+      SPRING_DATA_REDIS_HOST: redis
+      SPRING_DATA_REDIS_PORT: "6379"
+      TEAM_CHEST_SECURITY_JWT_ISSUER: ${JWT_ISSUER:?set JWT_ISSUER in .env}
+      TEAM_CHEST_SECURITY_JWT_AUDIENCE: ${JWT_AUDIENCE:-team-chest-api}
+      TEAM_CHEST_SECURITY_JWT_PUBLIC_KEY_LOCATION: file:/run/secrets/jwt-public-key
+    secrets:
+      - jwt-public-key
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/actuator/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 60s
+
+  token-mint:
+    image: eclipse-temurin:21-jdk-noble
+    profiles: ["tools"]
+    volumes:
+      - ./tools:/tools:ro
+      - ./.secrets:/secrets
+    environment:
+      JWT_ISSUER: ${JWT_ISSUER:?set JWT_ISSUER in .env}
+      JWT_AUDIENCE: ${JWT_AUDIENCE:-team-chest-api}
+    entrypoint: ["java", "/tools/TokenMint.java", "/secrets"]
+    command: ["keys"]
+
+secrets:
+  jwt-public-key:
+    file: ${JWT_PUBLIC_KEY_FILE:-./.secrets/jwt-public.pem}
+
+volumes:
+  mysql-data:

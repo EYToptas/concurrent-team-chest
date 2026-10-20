@@ -9,11 +9,16 @@ public record TeamChestProperties(
         @DefaultValue CampaignSettings campaign,
         @DefaultValue TransactionSettings transaction) {
 
-    public record CampaignSettings(@DefaultValue("7d") Duration claimGracePeriod) {
+    public record CampaignSettings(
+            @DefaultValue("7d") Duration claimGracePeriod,
+            @DefaultValue("1s") Duration openCampaignsRefresh) {
 
         public CampaignSettings {
             if (claimGracePeriod.isNegative()) {
                 throw new IllegalArgumentException("team-chest.campaign.claim-grace-period must not be negative");
+            }
+            if (openCampaignsRefresh.isNegative()) {
+                throw new IllegalArgumentException("team-chest.campaign.open-campaigns-refresh must not be negative");
             }
         }
     }

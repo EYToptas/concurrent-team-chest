@@ -17,11 +17,14 @@ public class CampaignCatalog {
 
     private final CampaignRepository campaigns;
     private final Duration claimGracePeriod;
+    private final Duration openCampaignsRefresh;
     private final Map<Long, Campaign> campaignsById = new ConcurrentHashMap<>();
+    private volatile OpenCampaigns openCampaigns;
 
     public CampaignCatalog(CampaignRepository campaigns, TeamChestProperties properties) {
         this.campaigns = campaigns;
         this.claimGracePeriod = properties.campaign().claimGracePeriod();
+        this.openCampaignsRefresh = properties.campaign().openCampaignsRefresh();
     }
 
     public Campaign requireCampaign(long campaignId, Predicate<CampaignPhase> operationAllowed, Instant now) {
@@ -34,7 +37,7 @@ public class CampaignCatalog {
     }
 
     public Campaign requireCurrentCampaign(Predicate<CampaignPhase> operationAllowed, Instant now) {
-        List<Campaign> open = campaigns.findByEndsAtAfter(now.minus(claimGracePeriod)).stream()
+        List<Campaign> open = notClosedAt(now).stream()
                 .filter(campaign -> campaign.phaseAt(now, claimGracePeriod).isOpen())
                 .toList();
         if (open.size() > 1) {
@@ -55,6 +58,25 @@ public class CampaignCatalog {
 
     public Instant claimDeadline(Campaign campaign) {
         return campaign.claimWindowEnd(claimGracePeriod);
+    }
+
+    private List<Campaign> notClosedAt(Instant now) {
+        OpenCampaigns loaded = openCampaigns;
+        if (loaded != null && loaded.covers(now, openCampaignsRefresh)) {
+            return loaded.campaigns();
+        }
+        loaded = new OpenCampaigns(List.copyOf(campaigns.findByEndsAtAfter(now.minus(claimGracePeriod))), now);
+        if (!openCampaignsRefresh.isZero()) {
+            openCampaigns = loaded;
+        }
+        return loaded.campaigns();
+    }
+
+    private record OpenCampaigns(List<Campaign> campaigns, Instant loadedAt) {
+
+        boolean covers(Instant now, Duration refresh) {
+            return !now.isBefore(loadedAt) && now.isBefore(loadedAt.plus(refresh));
+        }
     }
 
     private Campaign findById(long campaignId) {

@@ -1,0 +1,14 @@
+-- Statements with the most server time.
+SELECT COUNT_POINT,
+       ROUND(AVG_TIMER_WAIT / 1000000000, 3),
+       ROUND(QUANTILE_95 / 1000000000, 3),
+       ROUND(SUM_TIMER_WAIT / 1000000000, 1),
+       ROUND(SUM_ROWS_EXAMINED / COUNT_POINT, 1),
+       SUM_NO_INDEX_USED,
+       ROUND(MAX_TIMER_WAIT / 1000000000, 3),
+       IF(MAX_TIMER_WAIT >= 9223372036854775808, 1, 0),
+       LEFT(REPLACE(REPLACE(REPLACE(DIGEST_TEXT, '\t', ' '), '\n', ' '), '\r', ' '), 300)
+FROM performance_schema.campaigns_statements_summary_by_digest
+WHERE SCHEMA_NAME = 'teamchest' AND COUNT_POINT > 0
+ORDER BY MAX_TIMER_WAIT >= 9223372036854775808, SUM_TIMER_WAIT DESC
+LIMIT 15;

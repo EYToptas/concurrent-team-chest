@@ -22,12 +22,6 @@ public interface TeamRepository extends Repository<Team, Long> {
     @Transactional(propagation = Propagation.MANDATORY)
     Optional<Team> findByIdForUpdate(@Param("id") Long id);
 
-    boolean existsByIdAndCompletedAtIsNotNull(Long id);
-
-    default boolean isCompleted(Long id) {
-        return existsByIdAndCompletedAtIsNotNull(id);
-    }
-
     @Query("""
             select new io.github.eytoptas.teamchest.persistence.team.TeamRankingRow(
                 t.id, t.campaignId, t.memberCount, t.totalPoints, t.targetPoints, t.completedAt, t.stateSeq,

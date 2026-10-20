@@ -20,10 +20,17 @@ class CampaignCatalogTest {
     private static final Instant NOW = Instant.parse("2026-10-18T12:00:00Z");
     private static final Duration GRACE = Duration.ofDays(7);
 
+    private static final Duration REFRESH = Duration.ofSeconds(1);
+
     private final InMemoryCampaignRepository repository = new InMemoryCampaignRepository();
-    private final CampaignCatalog catalog = new CampaignCatalog(repository, new TeamChestProperties(
-            new TeamChestProperties.CampaignSettings(GRACE),
-            new TeamChestProperties.TransactionSettings(3, Duration.ZERO, Duration.ZERO)));
+    private final CampaignCatalog catalog = catalog(Duration.ZERO);
+    private final CampaignCatalog reusingCatalog = catalog(REFRESH);
+
+    private CampaignCatalog catalog(Duration openCampaignsRefresh) {
+        return new CampaignCatalog(repository, new TeamChestProperties(
+                new TeamChestProperties.CampaignSettings(GRACE, openCampaignsRefresh),
+                new TeamChestProperties.TransactionSettings(3, Duration.ZERO, Duration.ZERO)));
+    }
 
     @Test
     void returnsAnCampaignWhosePhaseAllowsTheOperation() {
@@ -95,10 +102,92 @@ class CampaignCatalogTest {
                 .isInstanceOf(IllegalStateException.class);
     }
 
+    @Test
+    void openCampaignsAreReusedWithinTheRefreshPeriod() {
+        Campaign active = repository.add(1, NOW.minusSeconds(3600), NOW.plusSeconds(3600));
+
+        assertThat(reusingCatalog.requireCurrentCampaign(CampaignPhase::allowsJoin, NOW)).isSameAs(active);
+        assertThat(reusingCatalog.requireCurrentCampaign(CampaignPhase::allowsJoin, NOW.plusMillis(999))).isSameAs(active);
+        assertThat(repository.findByEndsAtAfterCalls).isEqualTo(1);
+
+        reusingCatalog.requireCurrentCampaign(CampaignPhase::allowsJoin, NOW.plus(REFRESH));
+        assertThat(repository.findByEndsAtAfterCalls).isEqualTo(2);
+    }
+
+    @Test
+    void theEndOfAnCampaignIsExactWhileTheListIsReused() {
+        Campaign campaign = repository.add(1, NOW.minusSeconds(3600), NOW.plusMillis(300));
+
+        assertThat(reusingCatalog.requireCurrentCampaign(CampaignPhase::allowsJoin, NOW.plusMillis(299))).isSameAs(campaign);
+        assertThatThrownBy(() -> reusingCatalog.requireCurrentCampaign(CampaignPhase::allowsJoin, NOW.plusMillis(300)))
+                .isInstanceOf(NoActiveCampaignException.class);
+        assertThat(reusingCatalog.requireCurrentCampaign(CampaignPhase::isOpen, NOW.plusMillis(300))).isSameAs(campaign);
+        assertThat(repository.findByEndsAtAfterCalls).isEqualTo(1);
+    }
+
+    @Test
+    void theEndOfTheClaimWindowIsExactWhileTheListIsReused() {
+        Instant claimWindowEnd = NOW.plusMillis(100);
+        Campaign campaign = repository.add(1, claimWindowEnd.minus(GRACE).minus(Duration.ofDays(1)), claimWindowEnd.minus(GRACE));
+
+        assertThat(reusingCatalog.requireCurrentCampaign(CampaignPhase::allowsClaim, NOW)).isSameAs(campaign);
+        assertThatThrownBy(() -> reusingCatalog.requireCurrentCampaign(CampaignPhase::isOpen, claimWindowEnd))
+                .isInstanceOf(NoActiveCampaignException.class);
+        assertThat(repository.findByEndsAtAfterCalls).isEqualTo(1);
+    }
+
+    @Test
+    void anCampaignLoadedBeforeItStartsBecomesCurrentAtItsStart() {
+        Campaign upcoming = repository.add(1, NOW.plusMillis(200), NOW.plusSeconds(3600));
+
+        assertThatThrownBy(() -> reusingCatalog.requireCurrentCampaign(CampaignPhase::allowsJoin, NOW))
+                .isInstanceOf(NoActiveCampaignException.class);
+        assertThat(reusingCatalog.requireCurrentCampaign(CampaignPhase::allowsJoin, NOW.plusMillis(200))).isSameAs(upcoming);
+        assertThat(repository.findByEndsAtAfterCalls).isEqualTo(1);
+    }
+
+    @Test
+    void anCampaignInsertedAfterTheLoadIsVisibleAfterTheRefreshPeriodAtTheLatest() {
+        assertThatThrownBy(() -> reusingCatalog.requireCurrentCampaign(CampaignPhase::allowsJoin, NOW))
+                .isInstanceOf(NoActiveCampaignException.class);
+        Campaign inserted = repository.add(1, NOW.minusSeconds(60), NOW.plusSeconds(3600));
+
+        assertThatThrownBy(() -> reusingCatalog.requireCurrentCampaign(CampaignPhase::allowsJoin, NOW.plusMillis(500)))
+                .isInstanceOf(NoActiveCampaignException.class);
+        assertThat(reusingCatalog.requireCurrentCampaign(CampaignPhase::allowsJoin, NOW.plus(REFRESH))).isSameAs(inserted);
+    }
+
+    @Test
+    void anEarlierClockReadingThanTheLoadQueriesAgain() {
+        repository.add(1, NOW.minusSeconds(3600), NOW.plusSeconds(3600));
+
+        reusingCatalog.requireCurrentCampaign(CampaignPhase::allowsJoin, NOW);
+        reusingCatalog.requireCurrentCampaign(CampaignPhase::allowsJoin, NOW.minusMillis(1));
+
+        assertThat(repository.findByEndsAtAfterCalls).isEqualTo(2);
+    }
+
+    @Test
+    void aZeroRefreshPeriodQueriesOnEveryRequest() {
+        repository.add(1, NOW.minusSeconds(3600), NOW.plusSeconds(3600));
+
+        catalog.requireCurrentCampaign(CampaignPhase::allowsJoin, NOW);
+        catalog.requireCurrentCampaign(CampaignPhase::allowsJoin, NOW);
+
+        assertThat(repository.findByEndsAtAfterCalls).isEqualTo(2);
+    }
+
+    @Test
+    void negativeRefreshPeriodIsRejected() {
+        assertThatThrownBy(() -> new TeamChestProperties.CampaignSettings(GRACE, Duration.ofSeconds(-1)))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
     private static final class InMemoryCampaignRepository implements CampaignRepository {
 
         private final List<Campaign> campaigns = new ArrayList<>();
         int findByIdCalls;
+        int findByEndsAtAfterCalls;
 
         Campaign add(long id, Instant startsAt, Instant endsAt) {
             Campaign campaign = new Campaign("campaign-" + id, 30, 300, "{}", startsAt, endsAt);
@@ -121,6 +210,7 @@ class CampaignCatalogTest {
 
         @Override
         public List<Campaign> findByEndsAtAfter(Instant endsAfter) {
+            findByEndsAtAfterCalls++;
             return campaigns.stream().filter(campaign -> campaign.getEndsAt().isAfter(endsAfter)).toList();
         }
     }

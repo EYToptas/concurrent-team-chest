@@ -1,0 +1,63 @@
+# Load-test additions to the local stack.
+services:
+
+  mysql:
+    volumes:
+      - ./perf/sql:/sql:ro
+
+  app:
+    cpus: ${PERF_APP_CPUS:-2}
+    mem_limit: ${PERF_APP_MEMORY:-1g}
+    environment:
+      TEAM_CHEST_CACHE_ENABLED: ${PERF_CACHE_ENABLED:-true}
+      TEAM_CHEST_RATE_LIMIT_ENABLED: "true"
+      TEAM_CHEST_RATE_LIMIT_JOIN_CAPACITY: "20"
+      TEAM_CHEST_RATE_LIMIT_JOIN_REFILL_PER_SECOND: "5"
+      TEAM_CHEST_RATE_LIMIT_PROGRESS_CAPACITY: "100"
+      TEAM_CHEST_RATE_LIMIT_PROGRESS_REFILL_PER_SECOND: "50"
+      TEAM_CHEST_RATE_LIMIT_CLAIM_CAPACITY: "20"
+      TEAM_CHEST_RATE_LIMIT_CLAIM_REFILL_PER_SECOND: "5"
+      TEAM_CHEST_RATE_LIMIT_GET_CAPACITY: "200"
+      TEAM_CHEST_RATE_LIMIT_GET_REFILL_PER_SECOND: "100"
+      MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE: health,metrics
+      MANAGEMENT_SERVER_PORT: "8081"
+      SERVER_TOMCAT_MBEANREGISTRY_ENABLED: "true"
+      JAVA_TOOL_OPTIONS: ${PERF_JAVA_TOOL_OPTIONS:--XX:MaxRAMPercentage=75 -XX:+ExitOnOutOfMemoryError}
+    ports:
+      - "127.0.0.1:8081:8081"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8081/actuator/health"]
+
+  token-mint:
+    volumes:
+      - ./perf/.tokens:/tokens
+
+  mysql-tools:
+    image: mysql:8.4
+    profiles: ["tools"]
+    depends_on:
+      mysql:
+        condition: service_healthy
+    environment:
+      MYSQL_PWD: ${MYSQL_ROOT_PASSWORD:?set MYSQL_ROOT_PASSWORD in .env}
+    volumes:
+      - ./perf/sql:/sql:ro
+    entrypoint: ["sh", "/sql/run-sql.sh"]
+
+  k6:
+    image: grafana/k6:2.3.0
+    profiles: ["tools"]
+    volumes:
+      - ./perf/k6:/scripts:ro
+      - ./perf/.tokens:/tokens:ro
+      - ./perf/results:/results
+    environment:
+      K6_NO_USAGE_REPORT: "true"
+
+  jfr-tools:
+    image: eclipse-temurin:21-jdk-noble
+    profiles: ["tools"]
+    volumes:
+      - ./tools:/tools:ro
+      - ./perf/results:/results
+    entrypoint: ["java", "/tools/JfrSummary.java"]

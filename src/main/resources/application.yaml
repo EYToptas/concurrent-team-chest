@@ -8,6 +8,10 @@ spring:
       transaction-isolation: TRANSACTION_READ_COMMITTED
       connection-init-sql: SET SESSION innodb_lock_wait_timeout = 2
       maximum-pool-size: 20
+      data-source-properties:
+        cachePrepStmts: true
+        prepStmtCacheSize: 250
+        prepStmtCacheSqlLimit: 2048
 
   jpa:
     open-in-view: false
@@ -38,6 +42,7 @@ management:
 team-chest:
   campaign:
     claim-grace-period: 7d
+    open-campaigns-refresh: 1s
   transaction:
     max-attempts: 3
     min-backoff: 5ms
