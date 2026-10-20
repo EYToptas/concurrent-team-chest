@@ -2,6 +2,8 @@ package io.github.eytoptas.teamchest.persistence.team;
 
 import io.github.eytoptas.teamchest.domain.team.TeamMember;
 import java.time.Instant;
+import java.util.Collection;
+import java.util.List;
 import java.util.Optional;
 import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
@@ -25,6 +27,14 @@ public interface TeamMemberRepository extends Repository<TeamMember, Long> {
             """)
     Optional<MemberTeamState> findTeamStateByCampaignIdAndUserId(@Param("campaignId") Long campaignId,
                                                                  @Param("userId") String userId);
+
+    @Query("""
+            select new io.github.eytoptas.teamchest.persistence.team.MemberTeam(m.userId, m.teamId)
+            from TeamMember m
+            where m.campaignId = :campaignId and m.userId in :userIds
+            """)
+    List<MemberTeam> findTeamsByCampaignIdAndUserIds(@Param("campaignId") Long campaignId,
+                                                     @Param("userIds") Collection<String> userIds);
 
     Optional<TeamMember> findByCampaignIdAndUserId(Long campaignId, String userId);
 

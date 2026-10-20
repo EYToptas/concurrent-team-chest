@@ -108,24 +108,41 @@ The mixes are defined once, in `perf/k6/mixes.json`, which k6 and `run.ps1` both
 | mix | /get | /progress | /join | /claim | models |
 |---|---:|---:|---:|---:|---|
 | read-heavy | 90 % | 9 % | 1 % | 0 % | players mostly looking at their team |
-| mixed | 70 % | 25 % | 4 % | 1 % | a typical session |
+| mixed | 70 % | 25 % | 4 % | 1 % | a typical session, with the correctness checks below |
 | write-heavy | 30 % | 62 % | 5 % | 3 % | stress for row locks, idempotency inserts and cache invalidation |
 | get-only | 100 % | | | | the read path alone; without writes no team is invalidated |
 | join-only | | | 100 % | | the join path alone: how many joins per second the join cursor row allows |
 
-Every request is meant to succeed with 200, so any other status is an error:
+Every request has one expected answer, 200 or a named business rejection:
 
-| endpoint | users and requests |
-|---|---|
-| `/get` | every seeded user, in a scattered order (each user about once per round over all users) |
-| `/progress` | users of teams that are not completed, 1 point per request, a new `Idempotency-Key` each time; the order is scattered so consecutive requests hit different teams, and no team reaches 300 points during a run |
-| `/join` | users that are not members yet (`join-000001` ...); they fill new teams one by one |
-| `/claim` | members of the completed teams, each exactly once |
+| endpoint | users and requests | expected |
+|---|---|---|
+| `/get` | every seeded user, in a scattered order (each user about once per round over all users) | 200 |
+| `/progress` | users of teams that are not completed, 1 point per request, a new `Idempotency-Key` each time; the order is scattered so consecutive requests hit different teams, and none of these teams reaches 300 points during a run | 200 |
+| `/join` | users that are not members yet (`join-000001` ...); they fill new teams one by one | 200 |
+| `/claim` | members of the completed teams, each once | 200 |
+
+Mixes with `checks` in `mixes.json` (`mixed`) add, within the same shares:
+
+| check | requests | expected |
+|---|---|---|
+| `finishEvery: 10` | every 10th `/progress`: the six members of a *finishing* team (seeded at 286 points) send 3 points each, one after the other (they can overlap) | four 200 with 3 points, one 200 clipped to 2 points that completes the team, one `TEAM_COMPLETED`, whatever the order |
+| `replayEvery: 50` | every 50th other `/progress` resends a request of a few seconds earlier: same user, body and `Idempotency-Key` | 200, nothing applied again |
+| `reclaimEvery: 10` | every 10th `/claim` (from the 20th on) claims again, with a new key, for the user of the claim 10 claims earlier | `ALREADY_CLAIMED` |
+
+Expected rejections are counted as outcomes, not as errors. Any other 4xx with an API error code,
+or a 200 where a rejection was expected, is an *unexpected business answer* and fails the run;
+5xx, timeouts and answers without an error body count as HTTP errors (target < 0.1 %). k6 counts
+the outcomes (applied, clipped, team completions, replays, joins, claims, expected rejections) for
+the steady phase and the whole run (`k6-report.md`, "Outcomes"), and `report.md` compares the
+whole-run counts with what the database stored (`verify.sql`): when k6 saw no unexpected answer,
+a difference fails the run (`outcome_count_mismatch`).
 
 `run.ps1` sizes the data from the shares of the chosen mix so that the user pools last for the
 whole run (more teams for higher rates or longer runs, at least `-MinTeams`); k6 fails the run
 with `pool_exhausted` if a pool still runs out. With `-Mix mixed` and the defaults (1000 req/s,
-60 s + 180 s) that is 1000 teams (30 000 users), 77 of them completed, and 9 240 joining users.
+60 s + 180 s) that is 1425 teams (42 750 users): 77 completed, 963 finishing and 385 for the other
+`/progress` requests, and 9 240 joining users.
 
 ## Capacity steps
 
@@ -281,6 +298,7 @@ three runs per configuration). Where to look:
 | `tomcat.threads.busy` at `tomcat.threads.config.max`, large client vs. server difference | requests waiting for a worker thread (the server is behind) | what the workers do: JFR waits and CPU |
 | `hikaricp.connections.pending` > 0, high `db.pool.acquire` | connection pool or slow transactions | `db.pool.usage`, MySQL row lock waits and top statements |
 | high `innodb_row_lock_waits` / `innodb_row_lock_time`, deadlocks | lock contention (hot rows: the join cursor, a team) | per-endpoint latency, `/join` and `/progress` p99, `join-only` |
+| high `/join` latency | the join cursor | `join.*` timers: `join.queue` (waiting in the instance for a group transaction), `join.lock.wait` (cursor lock), `join.lock.work` vs. `join.commit` (work under the lock vs. flush + COMMIT), joins per group transaction |
 | MySQL CPU high, many `rows/call` or `no index` in top statements | a query plan | the statement in the report |
 | low estimated team cache hit ratio | invalidations or entries expiring before the next read | invalidations/s, `get-only` vs. `read-heavy` |
 | `/get` slower with cache on than expected, high `redis.command` | Redis round trips | Redis `usec/call`, Redis CPU |

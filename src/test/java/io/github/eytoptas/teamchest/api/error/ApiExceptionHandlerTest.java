@@ -12,6 +12,7 @@ import io.github.eytoptas.teamchest.application.campaign.CampaignNotActiveExcept
 import io.github.eytoptas.teamchest.application.campaign.CampaignNotFoundException;
 import io.github.eytoptas.teamchest.application.campaign.NoActiveCampaignException;
 import io.github.eytoptas.teamchest.application.idempotency.IdempotencyKeyReuseException;
+import io.github.eytoptas.teamchest.application.join.JoinBusyException;
 import io.github.eytoptas.teamchest.application.ratelimit.RateLimitedOperation;
 import io.github.eytoptas.teamchest.application.transaction.ConcurrencyRetriesExhaustedException;
 import io.github.eytoptas.teamchest.domain.campaign.CampaignPhase;
@@ -37,6 +38,15 @@ class ApiExceptionHandlerTest {
                 .andExpect(header().string(HttpHeaders.RETRY_AFTER, "1"))
                 .andExpect(jsonPath("$.status").value(503))
                 .andExpect(jsonPath("$.code").value("SERVICE_BUSY"));
+    }
+
+    @Test
+    void busyJoinQueueIs503WithRetryAfter() throws Exception {
+        mvc.perform(get("/join-busy"))
+                .andExpect(status().isServiceUnavailable())
+                .andExpect(header().string(HttpHeaders.RETRY_AFTER, "1"))
+                .andExpect(jsonPath("$.code").value("SERVICE_BUSY"))
+                .andExpect(content().string(not(containsString("waiting in this instance"))));
     }
 
     @Test
@@ -96,6 +106,11 @@ class ApiExceptionHandlerTest {
         @GetMapping("/busy")
         void busy() {
             throw new ConcurrencyRetriesExhaustedException(3, new CannotAcquireLockException("deadlock"));
+        }
+
+        @GetMapping("/join-busy")
+        void joinBusy() {
+            throw new JoinBusyException("Too many joins are waiting in this instance");
         }
 
         @GetMapping("/rate-limited")

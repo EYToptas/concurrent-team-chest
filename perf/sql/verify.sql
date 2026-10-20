@@ -30,14 +30,31 @@ LEFT JOIN (SELECT user_id, SUM(CAST(result_payload ->> '$.appliedPoints' AS SIGN
            WHERE operation = 'PROGRESS' AND result_code = 'SUCCESS'
            GROUP BY user_id) AS progress ON progress.user_id = m.user_id
 WHERE m.points <> COALESCE(progress.applied, 0)
-                 + IF(m.user_id BETWEEN 'user-000001' AND CONCAT('user-', LPAD(@completed_teams * 30, 6, '0')), 10, 0);
+                 + IF(m.user_id NOT LIKE 'user-%', 0,
+                      CASE
+                          WHEN (CAST(SUBSTRING(m.user_id, 6) AS UNSIGNED) - 1) DIV 30 < @completed_teams THEN 10
+                          WHEN (CAST(SUBSTRING(m.user_id, 6) AS UNSIGNED) - 1) DIV 30 < @completed_teams + @finishing_teams
+                              THEN IF((CAST(SUBSTRING(m.user_id, 6) AS UNSIGNED) - 1) % 30 < 16, 10, 9)
+                          ELSE 0
+                      END);
 SELECT 'claim_outcome_violations',
        ABS((SELECT COUNT(*) FROM team_member WHERE claimed_at IS NOT NULL)
            - (SELECT COUNT(*) FROM idempotency_record WHERE operation = 'CLAIM' AND result_code = 'SUCCESS'));
 SELECT 'unfinished_outcome_violations', COUNT(*) FROM idempotency_record WHERE result_code IS NULL;
+SELECT 'double_claim_violations', COUNT(*)
+FROM (SELECT user_id FROM idempotency_record WHERE operation = 'CLAIM' AND result_code = 'SUCCESS'
+      GROUP BY user_id HAVING COUNT(*) > 1) AS users;
+SELECT 'completion_outcome_violations', COUNT(*)
+FROM (SELECT id, completed_at, ROW_NUMBER() OVER (ORDER BY id) AS team_no FROM team) AS t
+LEFT JOIN (SELECT CAST(result_payload ->> '$.teamId' AS UNSIGNED) AS team_id, COUNT(*) AS n
+           FROM idempotency_record
+           WHERE operation = 'PROGRESS' AND result_code = 'SUCCESS' AND result_payload ->> '$.teamCompleted' = 'true'
+           GROUP BY team_id) AS completing ON completing.team_id = t.id
+WHERE COALESCE(completing.n, 0) <> IF(t.completed_at IS NOT NULL AND t.team_no > @completed_teams, 1, 0);
 
 SELECT 'teams', COUNT(*) FROM team;
 SELECT 'completed_teams', COUNT(*) FROM team WHERE completed_at IS NOT NULL;
+SELECT 'completed_during_run', COUNT(*) - @completed_teams FROM team WHERE completed_at IS NOT NULL;
 SELECT 'members', COUNT(*) FROM team_member;
 SELECT 'joined_members', COUNT(*) - @teams * 30 FROM team_member;
 SELECT 'claimed_members', COUNT(*) FROM team_member WHERE claimed_at IS NOT NULL;

@@ -43,6 +43,12 @@ team-chest:
   campaign:
     claim-grace-period: 7d
     open-campaigns-refresh: 1s
+  join:
+    batching: true
+    max-batch-size: 50
+    queue-capacity: 500
+    queue-timeout: 5s
+    result-timeout: 30s
   transaction:
     max-attempts: 3
     min-backoff: 5ms

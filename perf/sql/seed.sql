@@ -17,8 +17,8 @@ WITH RECURSIVE team_no (n) AS (
     SELECT 1 UNION ALL SELECT n + 1 FROM team_no WHERE n < @teams
 )
 SELECT @campaign_id, 30, 300, 30,
-       IF(n <= @completed_teams, 300, 0),
-       IF(n <= @completed_teams, 60, 30),
+       IF(n <= @completed_teams, 300, IF(n <= @completed_teams + @finishing_teams, 286, 0)),
+       IF(n <= @completed_teams + @finishing_teams, 60, 30),
        IF(n <= @completed_teams, @now, NULL),
        @now
 FROM team_no
@@ -29,14 +29,14 @@ WITH RECURSIVE seat (s) AS (
     SELECT 1 UNION ALL SELECT s + 1 FROM seat WHERE s < 30
 ),
 ordered_team AS (
-    SELECT id, ROW_NUMBER() OVER (ORDER BY id) AS t, completed_at IS NOT NULL AS completed
+    SELECT id, ROW_NUMBER() OVER (ORDER BY id) AS t, total_points
     FROM team
     WHERE campaign_id = @campaign_id
 )
 SELECT @campaign_id, ordered_team.id,
        CONCAT('user-', LPAD((ordered_team.t - 1) * 30 + seat.s, 6, '0')),
-       IF(ordered_team.completed, 10, 0),
-       IF(ordered_team.completed, 30 + seat.s, seat.s),
+       CASE ordered_team.total_points WHEN 300 THEN 10 WHEN 286 THEN IF(seat.s <= 16, 10, 9) ELSE 0 END,
+       IF(ordered_team.total_points > 0, 30 + seat.s, seat.s),
        @now, NULL
 FROM ordered_team
 CROSS JOIN seat
@@ -47,6 +47,7 @@ COMMIT;
 SELECT 'campaign_id', @campaign_id;
 SELECT 'teams', COUNT(*) FROM team WHERE campaign_id = @campaign_id;
 SELECT 'completed_teams', COUNT(*) FROM team WHERE campaign_id = @campaign_id AND completed_at IS NOT NULL;
+SELECT 'finishing_teams', COUNT(*) FROM team WHERE campaign_id = @campaign_id AND total_points = 286;
 SELECT 'members', COUNT(*) FROM team_member WHERE campaign_id = @campaign_id;
 SELECT 'points', COALESCE(SUM(total_points), 0) FROM team WHERE campaign_id = @campaign_id;
 SELECT 'last_user', MAX(user_id) FROM team_member WHERE campaign_id = @campaign_id;

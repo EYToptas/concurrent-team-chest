@@ -1,5 +1,5 @@
 {
-  "comment": "Share of requests per endpoint, in percent; each mix adds up to 100. Read by perf/k6/load.js (the load) and perf/run.ps1 (data sizing).",
+  "comment": "Share of requests per endpoint, in percent; each mix adds up to 100. Read by perf/k6/load.js (the load) and perf/run.ps1 (data sizing). Optional checks (every N-th request, 0 or absent = off): finishEvery = /progress to a team that completes during the run (TEAM_COMPLETED expected afterwards), replayEvery = a /progress resent with the same Idempotency-Key, reclaimEvery = a /claim repeated by a user who already claimed (ALREADY_CLAIMED expected); perf/k6/load.js explains them.",
   "mixes": {
     "read-heavy": {
       "shares": { "get": 90, "progress": 9, "join": 1, "claim": 0 },
@@ -7,7 +7,8 @@
     },
     "mixed": {
       "shares": { "get": 70, "progress": 25, "join": 4, "claim": 1 },
-      "description": "a typical session"
+      "checks": { "finishEvery": 10, "replayEvery": 50, "reclaimEvery": 10 },
+      "description": "a typical session, including teams completing, retried requests and repeated claims"
     },
     "write-heavy": {
       "shares": { "get": 30, "progress": 62, "join": 5, "claim": 3 },

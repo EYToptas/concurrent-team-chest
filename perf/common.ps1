@@ -14,7 +14,13 @@ $AppTimers = @(
     @{ key = 'db.pool.acquire'; name = 'hikaricp.connections.acquire'; tag = '' },
     @{ key = 'db.pool.usage'; name = 'hikaricp.connections.usage'; tag = '' },
     @{ key = 'jvm.gc.pause'; name = 'jvm.gc.pause'; tag = '' },
-    @{ key = 'redis.command'; name = 'lettuce'; tag = '' }
+    @{ key = 'redis.command'; name = 'lettuce'; tag = '' },
+    @{ key = 'join.queue'; name = 'teamchest.join.queue'; tag = '' },
+    @{ key = 'join.batch'; name = 'teamchest.join.batch'; tag = '' },
+    @{ key = 'join.lock.wait'; name = 'teamchest.join.lock.wait'; tag = '' },
+    @{ key = 'join.lock.work'; name = 'teamchest.join.lock.work'; tag = '' },
+    @{ key = 'join.commit'; name = 'teamchest.join.commit'; tag = '' },
+    @{ key = 'join.lock.held'; name = 'teamchest.join.lock.held'; tag = '' }
 )
 
 function Write-Step([string] $Text) {

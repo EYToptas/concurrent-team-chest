@@ -46,6 +46,7 @@ $TeamSize = 30
 $AppUrl = 'http://localhost:8080'
 $ManagementUrl = 'http://localhost:8081'
 $ProgressRequestsPerUser = 5
+$FinishRequestsPerTeam = 6
 $JoinTokenBlock = 5000
 $JfrFile = '/tmp/team-chest.jfr'
 $JfrJavaOptions = '-XX:FlightRecorderOptions=stackdepth=128,maxchunksize=1g ' +
@@ -458,6 +459,9 @@ if ($shareSum -ne 100) {
     throw "The shares of mix $Mix in perf/k6/mixes.json add up to $shareSum, not 100"
 }
 $activeEndpoints = @($Endpoints | Where-Object { $share[$_] -gt 0 })
+$finishEvery = 0
+$mixChecks = Get-JsonValue $mixes.$Mix 'checks'
+if ($null -ne (Get-JsonValue $mixChecks 'finishEvery')) { $finishEvery = [int] (Get-JsonValue $mixChecks 'finishEvery') }
 
 $runId = '{0}-{1}-cache-{2}-{3}rps{4}' -f (Get-Date -Format 'yyyyMMdd-HHmmss'), $Mix, $Cache, $Rate,
     $(if ($Gc -cne 'default') { "-gc-$Gc" } else { '' })
@@ -508,7 +512,11 @@ try {
     $claimUsers = [Math]::Ceiling($Rate * $share.claim * $requestSeconds)
     $completedTeams = [int] [Math]::Ceiling($claimUsers / $TeamSize)
     $progressTeams = [int] [Math]::Ceiling($Rate * $share.progress * $requestSeconds / ($ProgressRequestsPerUser * $TeamSize))
-    $teams = [Math]::Max($MinTeams, $completedTeams + [Math]::Max(1, $progressTeams))
+    $finishingTeams = 0
+    if ($finishEvery -gt 0 -and $share.progress -gt 0) {
+        $finishingTeams = [int] [Math]::Ceiling($Rate * $share.progress * $requestSeconds / ($finishEvery * $FinishRequestsPerTeam))
+    }
+    $teams = [Math]::Max($MinTeams, $completedTeams + $finishingTeams + [Math]::Max(1, $progressTeams))
     $seededUsers = $teams * $TeamSize
     $joinUsers = [int] [Math]::Max(100, [Math]::Ceiling($Rate * $share.join * $requestSeconds))
     $joinTokens = [int] ([Math]::Ceiling($joinUsers / [double] $JoinTokenBlock) * $JoinTokenBlock)
@@ -520,8 +528,8 @@ try {
     Write-Host ("    load: {0} req/s, mix {1} ({2}), cache {3}, {4} s warm-up + {5} s steady; app limited to {6} CPU / {7}, GC {8}" -f `
             $Rate, $Mix, (($activeEndpoints | ForEach-Object { '{0} {1}%' -f $_, $sharePercent[$_] }) -join ', '),
             $Cache, $Warmup, $Duration, $AppCpus, $AppMemory, $Gc)
-    Write-Host ("    data: {0} teams of {1} ({2} completed), {3} seeded users, {4} join users needed" -f `
-            $teams, $TeamSize, $completedTeams, $seededUsers, $joinUsers)
+    Write-Host ("    data: {0} teams of {1} ({2} completed, {3} finishing), {4} seeded users, {5} join users needed" -f `
+            $teams, $TeamSize, $completedTeams, $finishingTeams, $seededUsers, $joinUsers)
 
     New-Item -ItemType Directory -Force -Path $resultDir, $tokensDir, $secretsDir | Out-Null
 
@@ -580,9 +588,10 @@ try {
     }
 
     Write-Step 'Seeding the load-test data'
-    $seed = Invoke-Sql 'seed.sql' @("teams=$teams", "completed_teams=$completedTeams")
+    $seed = Invoke-Sql 'seed.sql' @("teams=$teams", "completed_teams=$completedTeams", "finishing_teams=$finishingTeams")
     $seed.GetEnumerator() | ForEach-Object { Write-Host ("    {0} = {1}" -f $_.Key, $_.Value) }
     if ([int] $seed['teams'] -ne $teams -or [int] $seed['completed_teams'] -ne $completedTeams -or
+            [int] $seed['finishing_teams'] -ne $finishingTeams -or
             [int] $seed['members'] -ne $seededUsers) {
         throw 'The seeded data does not match the requested sizes'
     }
@@ -633,7 +642,7 @@ try {
     Write-Step ("k6: {0} s, expected to finish at about {1:HH:mm:ss}" -f ($Warmup + $Duration), $loadStart.AddSeconds($Warmup + $Duration + 15))
     $k6Args = @('run', '--rm', '-T', 'k6', 'run', '--quiet', "--log-output=file=/results/$runId/k6.log",
         '-e', "MIX=$Mix", '-e', "RATE=$Rate", '-e', "WARMUP=$Warmup", '-e', "DURATION=$Duration",
-        '-e', "COMPLETED_TEAMS=$completedTeams", '-e', "CACHE=$Cache", '-e', "RUN_ID=$k6RunId",
+        '-e', "COMPLETED_TEAMS=$completedTeams", '-e', "FINISHING_TEAMS=$finishingTeams", '-e', "CACHE=$Cache", '-e', "RUN_ID=$k6RunId",
         '-e', "RESULT_DIR=/results/$runId", '/scripts/load.js')
     Invoke-Compose -AllowFailure -Arguments $k6Args
     $k6ExitCode = $LASTEXITCODE
@@ -650,7 +659,7 @@ try {
     $redisAfter = Get-RedisInfo
     $mysqlAfter = Invoke-Sql 'status.sql'
     $topStatements = @(Invoke-Compose -Capture -Arguments @('run', '--rm', '-T', 'mysql-tools', 'top-statements.sql'))
-    $verify = Invoke-Sql 'verify.sql' @("teams=$teams", "completed_teams=$completedTeams")
+    $verify = Invoke-Sql 'verify.sql' @("teams=$teams", "completed_teams=$completedTeams", "finishing_teams=$finishingTeams")
 
     if ($Jfr) {
         Write-Step 'Stopping the application so it writes the Java Flight Recording'
@@ -692,7 +701,7 @@ try {
         settings = [ordered]@{ mix = $Mix; sharesPercent = $sharePercent; cache = $Cache; rate = $Rate; warmupSeconds = $Warmup
             durationSeconds = $Duration; minTeams = $MinTeams; appCpus = $AppCpus; appMemory = $AppMemory; jfr = [bool] $Jfr
             smoke = [bool] $Smoke; gc = $Gc; javaToolOptions = $javaOptions }
-        data = [ordered]@{ teams = $teams; completedTeams = $completedTeams; seededUsers = $seededUsers
+        data = [ordered]@{ teams = $teams; completedTeams = $completedTeams; finishingTeams = $finishingTeams; seededUsers = $seededUsers
             joinUsersNeeded = $joinUsers; joinTokens = $meta.joinUsers }
         load = [ordered]@{ startUtc = $loadStart.ToUniversalTime().ToString('o'); endUtc = $loadEnd.ToUniversalTime().ToString('o')
             k6ExitCode = $k6ExitCode }

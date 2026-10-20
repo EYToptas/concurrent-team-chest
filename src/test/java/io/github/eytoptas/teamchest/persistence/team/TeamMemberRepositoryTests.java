@@ -9,6 +9,7 @@ import io.github.eytoptas.teamchest.domain.team.Team;
 import io.github.eytoptas.teamchest.domain.team.TeamMember;
 import io.github.eytoptas.teamchest.persistence.PersistenceIntegrationTest;
 import java.time.Instant;
+import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Future;
 import org.junit.jupiter.api.Test;
@@ -32,6 +33,21 @@ class TeamMemberRepositoryTests extends PersistenceIntegrationTest {
         assertThat(members.findTeamIdByCampaignIdAndUserId(campaign.getId(), "Alice")).isEmpty();
         assertThat(members.findByCampaignIdAndUserId(campaign.getId(), "alice"))
                 .hasValueSatisfying(member -> assertThat(member.getTeamId()).isEqualTo(team.getId()));
+    }
+
+    @Test
+    void membershipsOfSeveralUsersAreReadTogether() {
+        Campaign campaign = createCampaign();
+        Campaign otherCampaign = createCampaign();
+        Team team = createTeam(campaign);
+        Team otherTeam = createTeam(campaign);
+        addMember(team, "alice");
+        addMember(otherTeam, "bob");
+        addMember(createTeam(otherCampaign), "carol");
+
+        assertThat(members.findTeamsByCampaignIdAndUserIds(campaign.getId(), List.of("alice", "bob", "carol", "Alice")))
+                .containsExactlyInAnyOrder(new MemberTeam("alice", team.getId()), new MemberTeam("bob", otherTeam.getId()));
+        assertThat(members.findTeamsByCampaignIdAndUserIds(otherCampaign.getId(), List.of("alice"))).isEmpty();
     }
 
     @Test

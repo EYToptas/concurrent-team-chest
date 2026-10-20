@@ -433,8 +433,10 @@ foreach ($t in $AppTimers) {
             if ($steadyCalls.value -gt 0) { $steadyMean = $steadyTime.value * 1000.0 / $steadyCalls.value }
         }
     }
+    $timerCoverage = $null
+    if ($null -ne $appCoverage[$t.key]) { $timerCoverage = $appCoverage[$t.key].coverage }
     $timers[$t.key] = [ordered]@{ steadyPerSecond = $steadyPerSecond; steadyCalls = $steadyCount; steadyMeanMs = $steadyMean
-        wholeRunCalls = $wholeCalls; wholeRunMeanMs = $wholeMean; coverage = $appCoverage[$t.key].coverage }
+        wholeRunCalls = $wholeCalls; wholeRunMeanMs = $wholeMean; coverage = $timerCoverage }
 }
 
 $serverPerSecond = 0.0
@@ -934,6 +936,50 @@ foreach ($key in $verify.Keys) {
     if ($key -clike '*_violations' -and [int64] $verify[$key] -ne 0) { $violations[$key] = [int64] $verify[$key] }
 }
 if (-not $verify.Contains('over_capacity_violations')) { $violations['verify.sql'] = 'did not run' }
+
+$k6Outcomes = Get-JsonValue $k6 'outcomes'
+$k6Unexpected = Get-JsonValue (Get-JsonValue $k6 'unexpectedResponses') 'total'
+$dbValue = { param($key) if ($verify.Contains($key)) { [int64] $verify[$key] } else { [int64] 0 } }
+$k6Value = {
+    param($outcome)
+    $entry = Get-JsonValue $k6Outcomes $outcome
+    if ($null -eq $entry) { return $null }
+    return [int64] (Get-JsonValue $entry 'total')
+}
+$outcomeChecks = New-Object Collections.Generic.List[object]
+if ($null -ne $k6Outcomes -and $verify.Contains('over_capacity_violations')) {
+    $pairs = @(
+        @('progress', '/progress applied', 'progress.applied', 'outcomes.progress.success', 'successful progress outcomes stored'),
+        @('progress', 'teams completed by /progress', 'progress.team_completed', 'completed_during_run', 'teams completed during the run'),
+        @('progress', '/progress TEAM_COMPLETED (expected rejections)', 'progress.rejected.TEAM_COMPLETED', 'outcomes.progress.team_completed', 'TEAM_COMPLETED outcomes stored'),
+        @('progress', '/progress replays answered with 200', 'progress.replayed', $null, 'no record of their own (nothing applied again: member_points_violations)'),
+        @('join', '/join new members', 'join.joined', 'joined_members', 'members added during the run'),
+        @('claim', '/claim rewards given', 'claim.claimed', 'claimed_members', 'members with claimed_at'),
+        @('claim', '/claim ALREADY_CLAIMED (expected rejections)', 'claim.rejected.ALREADY_CLAIMED', 'outcomes.claim.already_claimed', 'ALREADY_CLAIMED outcomes stored')
+    )
+    foreach ($pair in $pairs) {
+        if ($sharePercent[$pair[0]] -le 0) { continue }
+        $fromK6 = & $k6Value $pair[2]
+        $fromDb = $null
+        $status = 'k6 only'
+        if ($null -ne $pair[3]) {
+            $fromDb = & $dbValue $pair[3]
+            if ($null -eq $fromK6) {
+                $status = $NotMeasured
+            } elseif ($fromK6 -eq $fromDb) {
+                $status = 'match'
+            } elseif ($null -ne $k6Unexpected -and [int64] $k6Unexpected -gt 0) {
+                $status = "differs ($k6Unexpected unexpected responses in k6)"
+            } else {
+                $status = 'MISMATCH'
+            }
+        }
+        $outcomeChecks.Add([ordered]@{ endpoint = $pair[0]; outcome = $pair[1]; k6 = $fromK6; database = $fromDb
+            databaseMeaning = $pair[4]; status = $status })
+    }
+    $mismatches = @($outcomeChecks | Where-Object { $_.status -ceq 'MISMATCH' }).Count
+    if ($mismatches -gt 0) { $violations['outcome_count_mismatch'] = $mismatches }
+}
 $k6Passed = ($k6ExitCode -eq 0) -and ($null -ne $k6) -and $k6.passed
 $passed = $k6Passed -and ($violations.Count -eq 0)
 
@@ -977,6 +1023,7 @@ $run = [ordered]@{
     cacheEstimate = $cacheEstimate
     jfr = [ordered]@{ status = $jfrStatus; summary = $jfrSummary }
     invariants = [ordered]@{ violations = $violations; values = $verify }
+    outcomeChecks = $outcomeChecks.ToArray()
     environment = $environment
     notes = $rawNotes
 }
@@ -1136,6 +1183,25 @@ $md.Add('`http.*`: server-side time per request, from Spring''s observation of t
     'client side); calls/s per second of this computer. `db.pool.acquire`: wait for a database connection; ' +
     '`db.pool.usage`: how long a connection is held; `redis.command`: one Redis command as the application sees it. ' +
     '`jvm.gc.pause`: total pause = calls x mean. The whole run includes the warm-up, when the JVM is still compiling.')
+$md.Add('')
+$md.Add('`join.*` (group join): `join.queue` = one /join that went to the batcher, its wait ' +
+    'until its group transaction started (in the instance, without a database connection); `join.batch` = one group ' +
+    'transaction, lock retries and commit included. Per transaction attempt, groups and single joins alike: ' +
+    '`join.lock.wait` = wait for the campaign''s cursor row lock (lock wait timeouts included), `join.lock.work` = reads ' +
+    'and inserts under the lock, `join.commit` = flush and durable COMMIT, `join.lock.held` = lock held until the ' +
+    'commit (work + commit) or the rollback.')
+$md.Add('')
+$joinQueue = $timers['join.queue']
+$joinBatch = $timers['join.batch']
+$joinsPerGroupText = $NotMeasured
+if ($null -ne $joinQueue.steadyCalls -and $null -ne $joinBatch.steadyCalls) {
+    if ($joinBatch.steadyCalls -gt 0) {
+        $joinsPerGroupText = Format-Number ($joinQueue.steadyCalls / $joinBatch.steadyCalls) 2
+    } else {
+        $joinsPerGroupText = 'no group transactions'
+    }
+}
+$md.Add("Joins per group transaction ($windowName, join.queue calls / join.batch calls): $joinsPerGroupText.")
 $md.Add('')
 
 $md.Add('## JVM: garbage collection and JIT compilation')
@@ -1306,6 +1372,23 @@ $md.Add('| command | calls | usec/call |')
 $md.Add('|---|---:|---:|')
 foreach ($name in $redisCommands.Keys) {
     $md.Add(('| {0} | {1} | {2} |' -f $name, (Format-Number $redisCommands[$name].calls 0), (Format-Number $redisCommands[$name].usecPerCall 2)))
+}
+$md.Add('')
+$md.Add('## Outcomes: k6 vs. database (whole run)')
+$md.Add('')
+if ($outcomeChecks.Count -eq 0) {
+    $md.Add('Not compared: ' + $(if ($null -eq $k6Outcomes) { 'k6 counted no outcomes (a run from before outcome counting)' } else { 'verify.sql did not run' }) + '.')
+} else {
+    $md.Add('| outcome | k6 (answers received) | database | database counts | check |')
+    $md.Add('|---|---:|---:|---|---|')
+    foreach ($check in $outcomeChecks) {
+        $md.Add(('| {0} | {1} | {2} | {3} | {4} |' -f $check.outcome, (Format-Measured $check.k6 0),
+            $(if ($null -eq $check.database) { '-' } else { "$($check.database)" }), $check.databaseMeaning, $check.status))
+    }
+    $md.Add('')
+    $md.Add('k6 counts the answers it received, warm-up included; the database what was committed (perf/sql/verify.sql). ' +
+        'A request can commit without its answer reaching k6 (timeout), so a difference fails the run only when k6 saw no ' +
+        'unexpected response. Expected rejections are stored outcomes too (the same key gets the same answer).')
 }
 $md.Add('')
 $md.Add('## Invariants after the run (perf/sql/verify.sql)')

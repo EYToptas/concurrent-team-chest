@@ -4,6 +4,7 @@ import io.github.eytoptas.teamchest.application.campaign.CampaignNotActiveExcept
 import io.github.eytoptas.teamchest.application.campaign.CampaignNotFoundException;
 import io.github.eytoptas.teamchest.application.campaign.NoActiveCampaignException;
 import io.github.eytoptas.teamchest.application.idempotency.IdempotencyKeyReuseException;
+import io.github.eytoptas.teamchest.application.join.JoinBusyException;
 import io.github.eytoptas.teamchest.application.transaction.ConcurrencyRetriesExhaustedException;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -69,8 +70,13 @@ public class ApiExceptionHandler {
 
     @ExceptionHandler(ConcurrencyRetriesExhaustedException.class)
     ResponseEntity<ErrorResponse> busy(ConcurrencyRetriesExhaustedException e) {
-        ErrorResponse body = ErrorResponse.of(ErrorCode.SERVICE_BUSY, "The request could not be completed, retry later");
-        return ResponseEntity.status(body.status()).header(HttpHeaders.RETRY_AFTER, RETRY_AFTER_SECONDS).body(body);
+        return serviceBusy();
+    }
+
+    @ExceptionHandler(JoinBusyException.class)
+    ResponseEntity<ErrorResponse> joinBusy(JoinBusyException e) {
+        log.debug("Join not completed: {}", e.getMessage());
+        return serviceBusy();
     }
 
     @ExceptionHandler(MethodArgumentNotValidException.class)
@@ -135,6 +141,11 @@ public class ApiExceptionHandler {
     private static String describe(String parameter, MessageSourceResolvable error) {
         String field = error instanceof FieldError fieldError ? fieldError.getField() : parameter;
         return field + ": " + error.getDefaultMessage();
+    }
+
+    private static ResponseEntity<ErrorResponse> serviceBusy() {
+        ErrorResponse body = ErrorResponse.of(ErrorCode.SERVICE_BUSY, "The request could not be completed, retry later");
+        return ResponseEntity.status(body.status()).header(HttpHeaders.RETRY_AFTER, RETRY_AFTER_SECONDS).body(body);
     }
 
     private static ResponseEntity<ErrorResponse> respond(ErrorResponse body) {
