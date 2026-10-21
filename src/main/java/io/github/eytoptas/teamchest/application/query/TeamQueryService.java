@@ -1,6 +1,7 @@
 package io.github.eytoptas.teamchest.application.query;
 
 import io.github.eytoptas.teamchest.application.Commands;
+import io.github.eytoptas.teamchest.application.TeamChestMetrics;
 import io.github.eytoptas.teamchest.application.cache.MembershipCache;
 import io.github.eytoptas.teamchest.application.cache.TeamStandingCache;
 import io.github.eytoptas.teamchest.application.campaign.CampaignCatalog;
@@ -30,15 +31,18 @@ public class TeamQueryService {
     private final MembershipCache membershipCache;
     private final TeamStandingCache teamStandingCache;
     private final Clock clock;
+    private final TeamChestMetrics metrics;
 
     public TeamQueryService(CampaignCatalog campaignCatalog, TeamRepository teams, TeamMemberRepository members,
-                            MembershipCache membershipCache, TeamStandingCache teamStandingCache, Clock clock) {
+                            MembershipCache membershipCache, TeamStandingCache teamStandingCache, Clock clock,
+                            TeamChestMetrics metrics) {
         this.campaignCatalog = campaignCatalog;
         this.teams = teams;
         this.members = members;
         this.membershipCache = membershipCache;
         this.teamStandingCache = teamStandingCache;
         this.clock = clock;
+        this.metrics = metrics;
     }
 
     public TeamOverview overviewFor(String userId) {
@@ -64,6 +68,7 @@ public class TeamQueryService {
 
     private Optional<Long> teamIdOf(long campaignId, String userId) {
         Optional<Long> cached = membershipCache.findTeamId(campaignId, userId);
+        metrics.cacheLookup("membership", cached.isPresent());
         if (cached.isPresent()) {
             return cached;
         }
@@ -73,13 +78,15 @@ public class TeamQueryService {
     }
 
     private TeamOverview.TeamStanding standingOf(long campaignId, long teamId, String userId) {
-        return teamStandingCache.find(campaignId, teamId)
-                .filter(cached -> cached.member(userId).isPresent())
-                .orElseGet(() -> {
-                    TeamOverview.TeamStanding loaded = loadStanding(campaignId, teamId);
-                    teamStandingCache.offer(campaignId, loaded);
-                    return loaded;
-                });
+        Optional<TeamOverview.TeamStanding> cached = teamStandingCache.find(campaignId, teamId)
+                .filter(standing -> standing.member(userId).isPresent());
+        metrics.cacheLookup("team", cached.isPresent());
+        if (cached.isPresent()) {
+            return cached.get();
+        }
+        TeamOverview.TeamStanding loaded = loadStanding(campaignId, teamId);
+        teamStandingCache.offer(campaignId, loaded);
+        return loaded;
     }
 
     private TeamOverview.TeamStanding loadStanding(long campaignId, long teamId) {

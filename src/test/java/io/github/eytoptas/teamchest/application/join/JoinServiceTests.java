@@ -6,6 +6,7 @@ import static org.assertj.core.api.Assertions.fail;
 
 import io.github.eytoptas.teamchest.application.AfterCommitRecorder.Observation;
 import io.github.eytoptas.teamchest.application.ServiceIntegrationTest;
+import io.github.eytoptas.teamchest.application.TeamChestMetrics;
 import io.github.eytoptas.teamchest.application.cache.TeamStateChanged;
 import io.github.eytoptas.teamchest.application.campaign.CampaignCatalog;
 import io.github.eytoptas.teamchest.application.campaign.NoActiveCampaignException;
@@ -350,7 +351,7 @@ class JoinServiceTests extends ServiceIntegrationTest {
 
     private JoinService ownService(JoinProperties settings, MeterRegistry meters) {
         JoinService service = new JoinService(campaignCatalog, cursors, teams, members, transactions, eventPublisher,
-                clock, settings, meters);
+                clock, settings, meters, new TeamChestMetrics(meters));
         ownServices.add(service);
         return service;
     }

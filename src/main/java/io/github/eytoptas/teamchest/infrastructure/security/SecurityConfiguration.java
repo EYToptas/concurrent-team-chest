@@ -1,6 +1,7 @@
 package io.github.eytoptas.teamchest.infrastructure.security;
 
 import java.security.interfaces.RSAPublicKey;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -21,12 +22,15 @@ public class SecurityConfiguration {
 
     @Bean
     SecurityFilterChain apiSecurity(HttpSecurity http, AuthenticationEntryPoint authenticationEntryPoint,
-                                    AccessDeniedHandler accessDeniedHandler) throws Exception {
+                                    AccessDeniedHandler accessDeniedHandler,
+                                    @Value("${management.server.port:-1}") int managementPort) throws Exception {
         http
                 .csrf(AbstractHttpConfigurer::disable)
                 .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(requests -> requests
                         .requestMatchers("/actuator/health", "/actuator/health/**", "/error").permitAll()
+                        .requestMatchers(request -> managementPort > 0 && request.getLocalPort() == managementPort
+                                && "/actuator/prometheus".equals(request.getRequestURI())).permitAll()
                         .anyRequest().authenticated())
                 .oauth2ResourceServer(resourceServer -> resourceServer
                         .jwt(Customizer.withDefaults())

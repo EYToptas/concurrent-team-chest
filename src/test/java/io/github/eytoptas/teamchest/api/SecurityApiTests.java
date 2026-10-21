@@ -174,6 +174,11 @@ class SecurityApiTests extends ApiIntegrationTest {
     }
 
     @Test
+    void metricsOnTheApiPortRequireAnAccessToken() throws Exception {
+        mvc.perform(get("/actuator/prometheus")).andExpect(status().isUnauthorized());
+    }
+
+    @Test
     void unknownPathsRequireAnAccessToken() throws Exception {
         mvc.perform(get("/admin")).andExpect(status().isUnauthorized());
     }

@@ -49,12 +49,13 @@ services:
       TEAM_CHEST_SECURITY_JWT_ISSUER: ${JWT_ISSUER:?set JWT_ISSUER in .env}
       TEAM_CHEST_SECURITY_JWT_AUDIENCE: ${JWT_AUDIENCE:-team-chest-api}
       TEAM_CHEST_SECURITY_JWT_PUBLIC_KEY_LOCATION: file:/run/secrets/jwt-public-key
+      MANAGEMENT_SERVER_PORT: "8081"
     secrets:
       - jwt-public-key
     ports:
       - "8080:8080"
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://localhost:8080/actuator/health"]
+      test: ["CMD", "curl", "-fsS", "http://localhost:8081/actuator/health"]
       interval: 5s
       timeout: 3s
       retries: 30

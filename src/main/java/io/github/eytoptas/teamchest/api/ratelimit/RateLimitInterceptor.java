@@ -1,6 +1,7 @@
 package io.github.eytoptas.teamchest.api.ratelimit;
 
 import io.github.eytoptas.teamchest.api.error.RateLimitExceededException;
+import io.github.eytoptas.teamchest.application.TeamChestMetrics;
 import io.github.eytoptas.teamchest.application.ratelimit.RateLimitDecision;
 import io.github.eytoptas.teamchest.application.ratelimit.RateLimiter;
 import jakarta.servlet.http.HttpServletRequest;
@@ -16,9 +17,11 @@ import org.springframework.web.servlet.HandlerInterceptor;
 public class RateLimitInterceptor implements HandlerInterceptor {
 
     private final RateLimiter rateLimiter;
+    private final TeamChestMetrics metrics;
 
-    RateLimitInterceptor(RateLimiter rateLimiter) {
+    RateLimitInterceptor(RateLimiter rateLimiter, TeamChestMetrics metrics) {
         this.rateLimiter = rateLimiter;
+        this.metrics = metrics;
     }
 
     @Override
@@ -36,6 +39,7 @@ public class RateLimitInterceptor implements HandlerInterceptor {
         }
         RateLimitDecision decision = rateLimiter.tryAcquire(rateLimited.value(), jwt.getSubject());
         if (!decision.allowed()) {
+            metrics.rateLimited(rateLimited.value());
             throw new RateLimitExceededException(rateLimited.value(), decision.retryAfter());
         }
         return true;

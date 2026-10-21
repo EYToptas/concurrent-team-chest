@@ -1,6 +1,7 @@
 package io.github.eytoptas.teamchest.application.join;
 
 import io.github.eytoptas.teamchest.application.Commands;
+import io.github.eytoptas.teamchest.application.TeamChestMetrics;
 import io.github.eytoptas.teamchest.application.cache.TeamStateChanged;
 import io.github.eytoptas.teamchest.application.campaign.CampaignCatalog;
 import io.github.eytoptas.teamchest.application.transaction.RetryingTransactionRunner;
@@ -37,11 +38,12 @@ public class JoinService implements DisposableBean {
     private final Clock clock;
     private final JoinLockTimers lockTimers;
     private final JoinBatcher batcher;
+    private final TeamChestMetrics metrics;
 
     public JoinService(CampaignCatalog campaignCatalog, TeamAssignmentCursorRepository cursors, TeamRepository teams,
                        TeamMemberRepository members, RetryingTransactionRunner transactions,
                        ApplicationEventPublisher eventPublisher, Clock clock, JoinProperties settings,
-                       MeterRegistry meters) {
+                       MeterRegistry meters, TeamChestMetrics metrics) {
         this.campaignCatalog = campaignCatalog;
         this.cursors = cursors;
         this.teams = teams;
@@ -51,9 +53,16 @@ public class JoinService implements DisposableBean {
         this.clock = clock;
         this.lockTimers = new JoinLockTimers(meters);
         this.batcher = settings.batching() ? new JoinBatcher(this::joinAll, settings, meters) : null;
+        this.metrics = metrics;
     }
 
     public JoinResult join(String userId) {
+        JoinResult result = joinCurrentCampaign(userId);
+        metrics.joined(result);
+        return result;
+    }
+
+    private JoinResult joinCurrentCampaign(String userId) {
         Commands.requireUserId(userId);
         Instant now = clock.instant();
         Campaign campaign = campaignCatalog.requireCurrentCampaign(CampaignPhase::allowsJoin, now);

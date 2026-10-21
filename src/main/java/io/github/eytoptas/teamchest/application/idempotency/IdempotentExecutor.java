@@ -1,6 +1,7 @@
 package io.github.eytoptas.teamchest.application.idempotency;
 
 import io.github.eytoptas.teamchest.application.TeamChestException;
+import io.github.eytoptas.teamchest.application.TeamChestMetrics;
 import io.github.eytoptas.teamchest.application.transaction.RetryingTransactionRunner;
 import io.github.eytoptas.teamchest.domain.campaign.Campaign;
 import io.github.eytoptas.teamchest.persistence.idempotency.IdempotencyRecord;
@@ -18,12 +19,14 @@ public class IdempotentExecutor {
     private final IdempotencyRecordRepository records;
     private final RetryingTransactionRunner transactions;
     private final Clock clock;
+    private final TeamChestMetrics metrics;
 
     public IdempotentExecutor(IdempotencyRecordRepository records, RetryingTransactionRunner transactions,
-                              Clock clock) {
+                              Clock clock, TeamChestMetrics metrics) {
         this.records = records;
         this.transactions = transactions;
         this.clock = clock;
+        this.metrics = metrics;
     }
 
     public <R> R execute(IdempotentRequest request, OutcomeCodec<R> codec,
@@ -35,13 +38,15 @@ public class IdempotentExecutor {
             return replay(request, codec).orElseThrow(() -> rejection);
         }
         try {
-            return transactions.execute(() -> {
+            R outcome = transactions.execute(() -> {
                 IdempotencyRecord record = insertPending(request);
-                R outcome = work.apply(campaign);
-                OutcomeCodec.StoredOutcome stored = codec.encode(outcome);
+                R result = work.apply(campaign);
+                OutcomeCodec.StoredOutcome stored = codec.encode(result);
                 record.complete(stored.code(), stored.payload());
-                return outcome;
+                return result;
             });
+            metrics.executed(outcome);
+            return outcome;
         } catch (DuplicateIdempotencyKeyException e) {
             return replay(request, codec).orElseThrow(() -> new IllegalStateException(
                     "Idempotency key conflict but no committed record for key " + request.idempotencyKey(), e));
@@ -58,6 +63,7 @@ public class IdempotentExecutor {
                     if (!record.isCompleted()) {
                         throw new IllegalStateException("Committed idempotency record " + record.getId() + " has no outcome");
                     }
+                    metrics.replayed(request.operation());
                     return codec.decode(record.getResultCode(), record.getResultPayload());
                 });
     }
