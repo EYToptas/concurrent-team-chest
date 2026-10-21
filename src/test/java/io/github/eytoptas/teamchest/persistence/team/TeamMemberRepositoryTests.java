@@ -51,57 +51,6 @@ class TeamMemberRepositoryTests extends PersistenceIntegrationTest {
     }
 
     @Test
-    void teamStateIsReadWithTheMembership() {
-        Campaign campaign = createCampaign();
-        Campaign otherCampaign = createCampaign();
-        Team team = createTeam(campaign);
-        Team otherTeam = createTeam(otherCampaign);
-        addMember(team, "alice");
-        addMember(team, "bob");
-        addMember(otherTeam, "carol");
-
-        assertThat(members.findTeamStateByCampaignIdAndUserId(campaign.getId(), "alice"))
-                .contains(new MemberTeamState(team.getId(), null));
-        assertThat(members.findTeamStateByCampaignIdAndUserId(otherCampaign.getId(), "alice")).isEmpty();
-        assertThat(members.findTeamStateByCampaignIdAndUserId(campaign.getId(), "Alice")).isEmpty();
-        assertThat(members.findTeamStateByCampaignIdAndUserId(campaign.getId(), "carol")).isEmpty();
-
-        applyPoints(team, "alice", 300);
-
-        assertThat(members.findTeamStateByCampaignIdAndUserId(campaign.getId(), "bob")).hasValueSatisfying(state -> {
-            assertThat(state.teamId()).isEqualTo(team.getId());
-            assertThat(state.teamCompleted()).isTrue();
-            assertThat(state.teamCompletedAt()).isEqualTo(NOW);
-        });
-        assertThat(members.findTeamStateByCampaignIdAndUserId(otherCampaign.getId(), "carol"))
-                .contains(new MemberTeamState(otherTeam.getId(), null));
-    }
-
-    @Test
-    void teamStateDoesNotWaitForTheTeamLock() throws Exception {
-        Campaign campaign = createCampaign();
-        Team team = createTeam(campaign);
-        addMember(team, "alice");
-        CountDownLatch holdsLock = new CountDownLatch(1);
-        CountDownLatch release = new CountDownLatch(1);
-        Future<Void> holder = inTransactionAsync(() -> {
-            teams.findByIdForUpdate(team.getId()).orElseThrow();
-            holdsLock.countDown();
-            await(release);
-            return null;
-        });
-        await(holdsLock);
-
-        try {
-            assertThat(result(inTransactionAsync(() -> members.findTeamStateByCampaignIdAndUserId(campaign.getId(), "alice"))))
-                    .contains(new MemberTeamState(team.getId(), null));
-        } finally {
-            release.countDown();
-            result(holder);
-        }
-    }
-
-    @Test
     void secondMembershipInTheSameCampaignIsRejectedByTheDatabase() {
         Campaign campaign = createCampaign();
         Team team = createTeam(campaign);

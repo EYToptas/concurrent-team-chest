@@ -22,6 +22,15 @@ public interface TeamRepository extends Repository<Team, Long> {
     @Transactional(propagation = Propagation.MANDATORY)
     Optional<Team> findByIdForUpdate(@Param("id") Long id);
 
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("""
+            select t from Team t
+            where t.campaignId = :campaignId
+              and t.id = (select m.teamId from TeamMember m where m.campaignId = :campaignId and m.userId = :userId)
+            """)
+    @Transactional(propagation = Propagation.MANDATORY)
+    Optional<Team> findTeamOfMemberForUpdate(@Param("campaignId") Long campaignId, @Param("userId") String userId);
+
     @Query("""
             select new io.github.eytoptas.teamchest.persistence.team.TeamRankingRow(
                 t.id, t.campaignId, t.memberCount, t.totalPoints, t.targetPoints, t.completedAt, t.stateSeq,
@@ -30,7 +39,6 @@ public interface TeamRepository extends Repository<Team, Long> {
             join TeamMember m on m.teamId = t.id and m.campaignId = t.campaignId
             where t.id = :teamId and t.campaignId = :campaignId
               and m.teamId = :teamId and m.campaignId = :campaignId
-            order by m.points desc, m.pointsReachedSeq asc
             """)
-    List<TeamRankingRow> findRanking(@Param("campaignId") Long campaignId, @Param("teamId") Long teamId);
+    List<TeamRankingRow> findTeamWithMembers(@Param("campaignId") Long campaignId, @Param("teamId") Long teamId);
 }

@@ -7,8 +7,10 @@ import io.github.eytoptas.teamchest.application.ServiceIntegrationTest;
 import io.github.eytoptas.teamchest.application.campaign.CampaignNotActiveException;
 import io.github.eytoptas.teamchest.domain.campaign.Campaign;
 import io.github.eytoptas.teamchest.domain.team.Team;
+import io.github.eytoptas.teamchest.persistence.RecordedSql;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.concurrent.Future;
 import org.junit.jupiter.api.Test;
 
@@ -92,6 +94,63 @@ class ClaimServiceTests extends ServiceIntegrationTest {
     }
 
     @Test
+    void claimStartsWithTheInsertAndARetryReadsTheStoredOutcome() {
+        Campaign campaign = activeCampaign();
+        Team team = completedTeamWith(campaign, "alice");
+        assertThat(claim(campaign, "giovanni")).isEqualTo(new ClaimResult.NotAMember(campaign.getId()));
+        ClaimCommand command = new ClaimCommand("alice", campaign.getId(), newKey());
+        List<ClaimResult> answers = new ArrayList<>();
+
+        List<String> fresh = statementsOf(() -> answers.add(claimService.claim(command)));
+        List<String> retry = statementsOf(() -> answers.add(claimService.claim(command)));
+
+        assertThat(answers).hasSize(2).containsOnly(answers.get(0)).first().isInstanceOf(ClaimResult.Claimed.class);
+        assertThat(fresh.get(0)).startsWith("insert into idempotency_record");
+        assertThat(fresh.subList(1, fresh.size()))
+                .noneMatch(sql -> sql.contains("from idempotency_record") || sql.startsWith("insert"));
+        assertThat(retry).satisfiesExactly(
+                insert -> assertThat(insert).startsWith("insert into idempotency_record"),
+                lookup -> assertThat(lookup).startsWith("select").contains("from idempotency_record"));
+        assertThat(claimedMembers(team.getId())).isEqualTo(1);
+        assertThat(idempotencyRecordCount("alice", command.idempotencyKey())).isEqualTo(1);
+    }
+
+    @Test
+    void claimLocksTheTeamInOneStatement() {
+        Campaign campaign = activeCampaign();
+        Team team = completedTeamWith(campaign, "alice");
+        assertThat(claim(campaign, "giovanni")).isEqualTo(new ClaimResult.NotAMember(campaign.getId()));
+        List<ClaimResult> answers = new ArrayList<>();
+
+        List<String> statements = statementsOf(() -> answers.add(claim(campaign, "alice")));
+
+        assertThat(answers).singleElement().isInstanceOf(ClaimResult.Claimed.class);
+        assertThat(statements.subList(0, 3)).satisfiesExactly(
+                insert -> assertThat(insert).startsWith("insert into idempotency_record"),
+                lock -> assertThat(lock).startsWith("select").contains("from team ").contains("from team_member")
+                        .contains(" for update"),
+                member -> assertThat(member).startsWith("select").contains("from team_member")
+                        .doesNotContain(" for update"));
+        assertThat(statements.subList(3, statements.size())).allSatisfy(sql -> assertThat(sql).startsWith("update"));
+        assertThat(claimedMembers(team.getId())).isEqualTo(1);
+    }
+
+    @Test
+    void notReadyChestIsAnsweredWithoutLoadingTheMember() {
+        Campaign campaign = activeCampaign();
+        long teamId = joinService.join("alice").teamId();
+        progress(campaign, "alice", 120);
+        List<ClaimResult> answers = new ArrayList<>();
+
+        List<String> statements = statementsOf(() -> answers.add(claim(campaign, "alice")));
+
+        assertThat(answers).containsExactly(new ClaimResult.ChestNotReady(campaign.getId(), teamId, 120, 300));
+        assertThat(statements).filteredOn(sql -> sql.startsWith("select") && !sql.contains(" for update"))
+                .noneMatch(sql -> sql.contains("from team_member"));
+        assertThat(claimedMembers(teamId)).isZero();
+    }
+
+    @Test
     void completedChestCanStillBeClaimedDuringTheGracePeriod() {
         Campaign campaign = endedCampaignInGracePeriod();
         completedTeamWith(campaign, "alice");
@@ -141,6 +200,10 @@ class ClaimServiceTests extends ServiceIntegrationTest {
             assertThat(observation.campaign().version()).isEqualTo(claimed.version());
             assertThat(observation.committedVersion()).isEqualTo(claimed.version());
         });
+    }
+
+    private static List<String> statementsOf(Runnable work) {
+        return RecordedSql.during(work).stream().map(sql -> sql.toLowerCase(Locale.ROOT)).toList();
     }
 
     private int claimedMembers(long teamId) {

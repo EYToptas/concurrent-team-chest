@@ -6,18 +6,23 @@ import io.github.eytoptas.teamchest.application.cache.TeamStandingCache;
 import io.github.eytoptas.teamchest.application.campaign.CampaignCatalog;
 import io.github.eytoptas.teamchest.domain.campaign.Campaign;
 import io.github.eytoptas.teamchest.domain.campaign.CampaignPhase;
+import io.github.eytoptas.teamchest.domain.team.MemberRanking;
 import io.github.eytoptas.teamchest.persistence.team.TeamMemberRepository;
 import io.github.eytoptas.teamchest.persistence.team.TeamRankingRow;
 import io.github.eytoptas.teamchest.persistence.team.TeamRepository;
 import java.time.Clock;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Optional;
 import org.springframework.stereotype.Service;
 
 @Service
 public class TeamQueryService {
+
+    private static final Comparator<TeamRankingRow> RANKING =
+            MemberRanking.order(TeamRankingRow::points, TeamRankingRow::pointsReachedSeq);
 
     private final CampaignCatalog campaignCatalog;
     private final TeamRepository teams;
@@ -78,10 +83,11 @@ public class TeamQueryService {
     }
 
     private TeamOverview.TeamStanding loadStanding(long campaignId, long teamId) {
-        List<TeamRankingRow> rows = teams.findRanking(campaignId, teamId);
+        List<TeamRankingRow> rows = new ArrayList<>(teams.findTeamWithMembers(campaignId, teamId));
         if (rows.isEmpty()) {
             throw new IllegalStateException("Team " + teamId + " of a member has no members");
         }
+        rows.sort(RANKING);
         List<TeamOverview.MemberStanding> standings = new ArrayList<>(rows.size());
         for (TeamRankingRow row : rows) {
             standings.add(new TeamOverview.MemberStanding(

@@ -9,7 +9,6 @@ import io.github.eytoptas.teamchest.domain.campaign.CampaignPhase;
 import io.github.eytoptas.teamchest.domain.team.ProgressOutcome;
 import io.github.eytoptas.teamchest.domain.team.Team;
 import io.github.eytoptas.teamchest.domain.team.TeamMember;
-import io.github.eytoptas.teamchest.persistence.team.MemberTeamState;
 import io.github.eytoptas.teamchest.persistence.team.TeamMemberRepository;
 import io.github.eytoptas.teamchest.persistence.team.TeamRepository;
 import java.time.Clock;
@@ -54,16 +53,14 @@ public class ProgressService {
     }
 
     private ProgressResult applyPoints(Campaign campaign, ProgressCommand command, Instant now) {
-        Optional<MemberTeamState> membership = members.findTeamStateByCampaignIdAndUserId(campaign.getId(), command.userId());
-        if (membership.isEmpty()) {
+        Optional<Team> locked = teams.findTeamOfMemberForUpdate(campaign.getId(), command.userId());
+        if (locked.isEmpty()) {
             return new ProgressResult.NotAMember(campaign.getId());
         }
-        Long teamId = membership.get().teamId();
-        if (membership.get().teamCompleted()) {
-            return new ProgressResult.TeamAlreadyCompleted(campaign.getId(), teamId, campaign.getTargetPoints());
+        Team team = locked.get();
+        if (team.isCompleted()) {
+            return new ProgressResult.TeamAlreadyCompleted(campaign.getId(), team.getId(), campaign.getTargetPoints());
         }
-
-        Team team = teams.findByIdForUpdate(teamId).orElseThrow();
         TeamMember member = members.findByCampaignIdAndUserId(campaign.getId(), command.userId()).orElseThrow();
 
         return switch (team.applyPoints(member, command.points(), now)) {

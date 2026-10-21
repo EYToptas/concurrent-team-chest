@@ -1,5 +1,6 @@
 package io.github.eytoptas.teamchest.application.idempotency;
 
+import io.github.eytoptas.teamchest.application.TeamChestException;
 import io.github.eytoptas.teamchest.application.transaction.RetryingTransactionRunner;
 import io.github.eytoptas.teamchest.domain.campaign.Campaign;
 import io.github.eytoptas.teamchest.persistence.idempotency.IdempotencyRecord;
@@ -27,11 +28,12 @@ public class IdempotentExecutor {
 
     public <R> R execute(IdempotentRequest request, OutcomeCodec<R> codec,
                          Supplier<Campaign> preconditions, Function<Campaign, R> work) {
-        Optional<R> replayed = replay(request, codec);
-        if (replayed.isPresent()) {
-            return replayed.get();
+        Campaign campaign;
+        try {
+            campaign = preconditions.get();
+        } catch (TeamChestException rejection) {
+            return replay(request, codec).orElseThrow(() -> rejection);
         }
-        Campaign campaign = preconditions.get();
         try {
             return transactions.execute(() -> {
                 IdempotencyRecord record = insertPending(request);
@@ -72,7 +74,7 @@ public class IdempotentExecutor {
     static final class DuplicateIdempotencyKeyException extends RuntimeException {
 
         DuplicateIdempotencyKeyException(Throwable cause) {
-            super("Another request with the same idempotency key committed first", cause);
+            super("A request with the same idempotency key was committed before", cause);
         }
     }
 }

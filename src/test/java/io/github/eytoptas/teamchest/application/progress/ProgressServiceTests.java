@@ -132,52 +132,54 @@ class ProgressServiceTests extends ServiceIntegrationTest {
     }
 
     @Test
-    void appliedProgressReadsTheTeamStateOnceBeforeTheLock() {
+    void appliedProgressLocksTheTeamInOneStatement() {
         Campaign campaign = activeCampaign();
         long teamId = joinService.join("alice").teamId();
 
-        List<String> statements = RecordedSql.during(() -> progress(campaign, "alice", 6)).stream()
-                .map(sql -> sql.toLowerCase(Locale.ROOT)).toList();
+        List<String> statements = statementsOf(() -> progress(campaign, "alice", 6));
 
-        int lock = 0;
-        while (lock < statements.size() && !statements.get(lock).contains(" for update")) {
-            lock++;
-        }
-        assertThat(statements).hasSize(8);
-        assertThat(statements.subList(0, lock)).satisfiesExactly(
-                replay -> assertThat(replay).startsWith("select").contains("from idempotency_record"),
+        assertThat(statements).hasSize(6);
+        assertThat(statements.subList(0, 3)).satisfiesExactly(
                 insert -> assertThat(insert).startsWith("insert into idempotency_record"),
-                state -> assertThat(state).startsWith("select").contains("from team_member").contains("join team"));
-        assertThat(statements.get(lock)).contains("from team ");
-        assertThat(statements.subList(lock + 1, statements.size()))
-                .filteredOn(sql -> sql.startsWith("select")).singleElement()
-                .satisfies(member -> assertThat(member).contains("from team_member"));
-        assertThat(statements.subList(lock + 1, statements.size()))
-                .filteredOn(sql -> sql.startsWith("update")).hasSize(3);
+                lock -> assertThat(lock).startsWith("select").contains("from team ").contains("from team_member")
+                        .contains(" for update"),
+                member -> assertThat(member).startsWith("select").contains("from team_member")
+                        .doesNotContain(" for update"));
+        assertThat(statements.subList(3, 6)).allSatisfy(update -> assertThat(update).startsWith("update"));
         assertThat(teamPoints(teamId)).isEqualTo(6).isEqualTo(memberPointSum(teamId));
     }
 
     @Test
-    void progressOfACompletedTeamDoesNotQueueOnItsLock() throws Exception {
+    void retryIsAnsweredFromTheStoredOutcomeWithoutTouchingTheTeam() {
+        Campaign campaign = activeCampaign();
+        long teamId = joinService.join("alice").teamId();
+        ProgressCommand command = new ProgressCommand("alice", campaign.getId(), 6, newKey());
+        ProgressResult first = progressService.progress(command);
+        int announcements = afterCommit.forTeam(teamId).size();
+
+        List<ProgressResult> retried = new ArrayList<>();
+        List<String> statements = statementsOf(() -> retried.add(progressService.progress(command)));
+
+        assertThat(retried).containsExactly(first);
+        assertThat(statements).allSatisfy(sql -> assertThat(sql).contains("idempotency_record"));
+        assertThat(statements.get(0)).startsWith("insert into idempotency_record");
+        assertThat(statements.get(statements.size() - 1)).startsWith("select").contains("from idempotency_record");
+        assertThat(teamPoints(teamId)).isEqualTo(6).isEqualTo(memberPointSum(teamId));
+        assertThat(idempotencyRecordCount("alice", command.idempotencyKey())).isEqualTo(1);
+        assertThat(afterCommit.forTeam(teamId)).as("a replay invalidates nothing").hasSize(announcements);
+    }
+
+    @Test
+    void progressOfACompletedTeamIsRejectedWithoutLoadingTheMember() {
         Campaign campaign = activeCampaign();
         Team team = completedTeamWith(campaign, "alice", "bob");
-        CountDownLatch holdsLock = new CountDownLatch(1);
-        CountDownLatch release = new CountDownLatch(1);
-        Future<Void> holder = inTransactionAsync(() -> {
-            teams.findByIdForUpdate(team.getId()).orElseThrow();
-            holdsLock.countDown();
-            await(release);
-            return null;
-        });
-        await(holdsLock);
 
-        try {
-            assertThat(result(async(() -> progress(campaign, "bob", 5))))
-                    .isEqualTo(new ProgressResult.TeamAlreadyCompleted(campaign.getId(), team.getId(), 300));
-        } finally {
-            release.countDown();
-            result(holder);
-        }
+        List<ProgressResult> answers = new ArrayList<>();
+        List<String> statements = statementsOf(() -> answers.add(progress(campaign, "bob", 5)));
+
+        assertThat(answers).containsExactly(new ProgressResult.TeamAlreadyCompleted(campaign.getId(), team.getId(), 300));
+        assertThat(statements).filteredOn(sql -> sql.startsWith("select") && !sql.contains(" for update"))
+                .noneMatch(sql -> sql.contains("from team_member"));
         assertThat(teamPoints(team.getId())).isEqualTo(300).isEqualTo(memberPointSum(team.getId()));
     }
 
@@ -266,6 +268,19 @@ class ProgressServiceTests extends ServiceIntegrationTest {
     }
 
     @Test
+    void sameKeyWithDifferentContentIsRejectedEvenAfterTheCampaignEnded() {
+        Campaign campaign = endedCampaignInGracePeriod();
+        Team team = teamWith(campaign, "alice");
+        ProgressCommand command = new ProgressCommand("alice", campaign.getId(), 6, newKey());
+        storeOutcome(command, "SUCCESS", new ProgressResult.Applied(campaign.getId(), team.getId(), 6, 6, 6, 6, 300, false, 2));
+
+        assertThatThrownBy(() -> progressService.progress(
+                new ProgressCommand("alice", campaign.getId(), 60, command.idempotencyKey())))
+                .isInstanceOf(IdempotencyKeyReuseException.class);
+        assertThat(idempotencyRecordCount("alice", command.idempotencyKey())).isEqualTo(1);
+    }
+
+    @Test
     void appliedProgressIsAnnouncedAfterCommitAndRejectionsAreNot() {
         Campaign campaign = activeCampaign();
         long teamId = joinService.join("alice").teamId();
@@ -285,6 +300,10 @@ class ProgressServiceTests extends ServiceIntegrationTest {
         assertThatThrownBy(() -> new ProgressCommand("alice", 1L, -5, newKey())).isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> new ProgressCommand(" ", 1L, 5, newKey())).isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> new ProgressCommand("alice", 1L, 5, "k".repeat(65))).isInstanceOf(IllegalArgumentException.class);
+    }
+
+    private static List<String> statementsOf(Runnable work) {
+        return RecordedSql.during(work).stream().map(sql -> sql.toLowerCase(Locale.ROOT)).toList();
     }
 
     private void storeOutcome(ProgressCommand command, String code, ProgressResult outcome) {

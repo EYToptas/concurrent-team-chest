@@ -55,12 +55,14 @@ public class ClaimService {
     }
 
     private ClaimResult claimReward(Campaign campaign, ClaimCommand command, Instant now) {
-        Optional<Long> teamId = members.findTeamIdByCampaignIdAndUserId(campaign.getId(), command.userId());
-        if (teamId.isEmpty()) {
+        Optional<Team> locked = teams.findTeamOfMemberForUpdate(campaign.getId(), command.userId());
+        if (locked.isEmpty()) {
             return new ClaimResult.NotAMember(campaign.getId());
         }
-
-        Team team = teams.findByIdForUpdate(teamId.get()).orElseThrow();
+        Team team = locked.get();
+        if (!team.isCompleted()) {
+            return new ClaimResult.ChestNotReady(campaign.getId(), team.getId(), team.getTotalPoints(), team.getTargetPoints());
+        }
         TeamMember member = members.findByCampaignIdAndUserId(campaign.getId(), command.userId()).orElseThrow();
 
         return switch (team.claimReward(member, now)) {

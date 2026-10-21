@@ -8,11 +8,14 @@ import io.github.eytoptas.teamchest.application.campaign.CampaignNotActiveExcept
 import io.github.eytoptas.teamchest.application.progress.ProgressResult;
 import io.github.eytoptas.teamchest.application.transaction.ConcurrencyRetriesExhaustedException;
 import io.github.eytoptas.teamchest.domain.campaign.Campaign;
+import io.github.eytoptas.teamchest.domain.campaign.CampaignPhase;
 import io.github.eytoptas.teamchest.domain.team.ProgressOutcome;
 import io.github.eytoptas.teamchest.domain.team.Team;
 import io.github.eytoptas.teamchest.domain.team.TeamMember;
+import io.github.eytoptas.teamchest.persistence.RecordedSql;
 import io.github.eytoptas.teamchest.persistence.idempotency.IdempotentOperation;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
@@ -101,19 +104,60 @@ class IdempotentExecutorTests extends ServiceIntegrationTest {
     }
 
     @Test
-    void preconditionsAreNotEvaluatedForAReplay() {
+    void rejectedPreconditionsReplayAStoredOutcome() {
         IdempotentRequest request = request(newKey());
         executor.execute(request, codec, () -> campaign, ignored -> new ProgressResult.NotAMember(campaign.getId()));
 
         ProgressResult replayed = executor.execute(request, codec,
                 () -> {
-                    throw new CampaignNotActiveException(campaign.getId(), io.github.eytoptas.teamchest.domain.campaign.CampaignPhase.CLOSED);
+                    throw new CampaignNotActiveException(campaign.getId(), CampaignPhase.CLOSED);
                 },
                 ignored -> {
                     throw new AssertionError("work must not run for a replay");
                 });
 
         assertThat(replayed).isEqualTo(new ProgressResult.NotAMember(campaign.getId()));
+    }
+
+    @Test
+    void rejectedPreconditionsWithoutAStoredOutcomeAreRethrown() {
+        IdempotentRequest request = request(newKey());
+        CampaignNotActiveException rejection = new CampaignNotActiveException(campaign.getId(), CampaignPhase.CLOSED);
+
+        assertThatThrownBy(() -> executor.execute(request, codec,
+                () -> {
+                    throw rejection;
+                },
+                ignored -> {
+                    throw new AssertionError("work must not run for a rejected request");
+                }))
+                .isSameAs(rejection);
+        assertThat(idempotencyRecordCount("alice", request.idempotencyKey())).isZero();
+    }
+
+    @Test
+    void freshRequestIsNotLookedUpAndARetryReadsTheStoredOutcomeAfterItsInsertFailed() {
+        IdempotentRequest request = request(newKey());
+        ProgressResult answer = new ProgressResult.NotAMember(campaign.getId());
+        AtomicInteger runs = new AtomicInteger();
+
+        List<String> fresh = statementsOf(() -> executor.execute(request, codec, () -> campaign, ignored -> {
+            runs.incrementAndGet();
+            return answer;
+        }));
+        List<String> retry = statementsOf(() -> assertThat(executor.execute(request, codec, () -> campaign, ignored -> {
+            runs.incrementAndGet();
+            return answer;
+        })).isEqualTo(answer));
+
+        assertThat(fresh).satisfiesExactly(
+                insert -> assertThat(insert).startsWith("insert into idempotency_record"),
+                outcome -> assertThat(outcome).startsWith("update idempotency_record"));
+        assertThat(retry).satisfiesExactly(
+                insert -> assertThat(insert).startsWith("insert into idempotency_record"),
+                lookup -> assertThat(lookup).startsWith("select").contains("from idempotency_record"));
+        assertThat(runs).as("the work ran for the fresh request only").hasValue(1);
+        assertThat(idempotencyRecordCount("alice", request.idempotencyKey())).isEqualTo(1);
     }
 
     @Test
@@ -164,6 +208,10 @@ class IdempotentExecutorTests extends ServiceIntegrationTest {
         return new ProgressResult.Applied(campaign.getId(), locked.getId(), applied.requestedPoints(),
                 applied.appliedPoints(), applied.memberPoints(), applied.teamPoints(), applied.targetPoints(),
                 applied.teamCompleted(), locked.getStateSeq());
+    }
+
+    private static List<String> statementsOf(Runnable work) {
+        return RecordedSql.during(work).stream().map(sql -> sql.toLowerCase(Locale.ROOT)).toList();
     }
 
     private IdempotentRequest request(String key) {

@@ -2,8 +2,11 @@ package io.github.eytoptas.teamchest;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.entry;
 
 import java.util.List;
+import java.util.Map;
+import java.util.stream.Collectors;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -84,6 +87,26 @@ class SchemaConstraintsTests {
         long teamOfOtherCampaign = insertTeam(otherCampaignId, 30, 300);
 
         assertViolates("fk_member_team", () -> insertMember(campaignId, teamOfOtherCampaign, "bob"));
+    }
+
+    @Test
+    void memberIndexesLeaveOutTheColumnsThatProgressChanges() {
+        Map<String, String> columnsByIndex = jdbc.queryForList("""
+                        SELECT index_name AS name, GROUP_CONCAT(column_name ORDER BY seq_in_index) AS cols
+                        FROM information_schema.statistics
+                        WHERE table_schema = DATABASE() AND table_name = 'team_member'
+                        GROUP BY index_name
+                        """).stream()
+                .collect(Collectors.toMap(row -> (String) row.get("name"), row -> (String) row.get("cols")));
+
+        assertThat(columnsByIndex).containsOnly(
+                entry("PRIMARY", "id"),
+                entry("uk_member_campaign_user", "campaign_id,user_id"),
+                entry("ix_member_team", "team_id,campaign_id"));
+        assertThat(jdbc.queryForList("""
+                        SELECT version FROM flyway_schema_history WHERE success = 1 AND version IS NOT NULL
+                        """, String.class))
+                .contains("1", "2");
     }
 
     @Test
