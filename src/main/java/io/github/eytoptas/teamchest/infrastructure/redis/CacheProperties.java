@@ -8,11 +8,15 @@ import org.springframework.boot.context.properties.bind.DefaultValue;
 public record CacheProperties(
         @DefaultValue("true") boolean enabled,
         @DefaultValue("30s") Duration teamTtl,
-        @DefaultValue("10m") Duration membershipTtl) {
+        @DefaultValue("10m") Duration membershipTtl,
+        @DefaultValue("100000") int membershipLocalEntries) {
 
     public CacheProperties {
         requirePositive(teamTtl, "team-chest.cache.team-ttl");
         requirePositive(membershipTtl, "team-chest.cache.membership-ttl");
+        if (membershipLocalEntries < 0) {
+            throw new IllegalArgumentException("team-chest.cache.membership-local-entries must not be negative");
+        }
     }
 
     private static void requirePositive(Duration duration, String property) {

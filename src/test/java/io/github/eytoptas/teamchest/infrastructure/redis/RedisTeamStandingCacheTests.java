@@ -152,7 +152,8 @@ class RedisTeamStandingCacheTests extends PersistenceIntegrationTest {
 
     @Test
     void aDisabledCacheIsBypassedButStillInvalidated() {
-        CacheProperties disabled = new CacheProperties(false, cacheProperties.teamTtl(), cacheProperties.membershipTtl());
+        CacheProperties disabled = new CacheProperties(false, cacheProperties.teamTtl(), cacheProperties.membershipTtl(),
+                cacheProperties.membershipLocalEntries());
         RedisTeamStandingCache disabledCache = new RedisTeamStandingCache(redis, jsonMapper, disabled,
                 new RedisCircuitBreaker(clock, Duration.ofSeconds(1)));
 

@@ -41,10 +41,16 @@ class RedisPropertiesTest {
 
     @Test
     void cacheLifetimesMustBePositive() {
-        assertThatThrownBy(() -> new CacheProperties(true, Duration.ZERO, Duration.ofMinutes(10)))
+        assertThatThrownBy(() -> new CacheProperties(true, Duration.ZERO, Duration.ofMinutes(10), 100))
                 .hasMessageContaining("team-ttl");
-        assertThatThrownBy(() -> new CacheProperties(true, Duration.ofSeconds(30), Duration.ofSeconds(-1)))
+        assertThatThrownBy(() -> new CacheProperties(true, Duration.ofSeconds(30), Duration.ofSeconds(-1), 100))
                 .hasMessageContaining("membership-ttl");
+    }
+
+    @Test
+    void localMembershipEntriesMustNotBeNegative() {
+        assertThatThrownBy(() -> new CacheProperties(true, Duration.ofSeconds(30), Duration.ofMinutes(10), -1))
+                .hasMessageContaining("membership-local-entries");
     }
 
     @Test

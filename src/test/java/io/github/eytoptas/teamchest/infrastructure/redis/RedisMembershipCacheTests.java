@@ -6,6 +6,7 @@ import static org.assertj.core.api.Assertions.assertThatCode;
 import io.github.eytoptas.teamchest.application.cache.MembershipCache;
 import io.github.eytoptas.teamchest.persistence.PersistenceIntegrationTest;
 import java.time.Clock;
+import java.time.Duration;
 import java.util.UUID;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
@@ -50,6 +51,42 @@ class RedisMembershipCacheTests extends PersistenceIntegrationTest {
 
         assertThat(redis.getExpire(RedisKeys.membership(campaignId, userId), TimeUnit.MILLISECONDS))
                 .isBetween(1L, cacheProperties.membershipTtl().toMillis());
+    }
+
+    @Test
+    void aKnownMembershipIsServedFromMemory() {
+        membershipCache.remember(campaignId, userId, 42);
+        redis.delete(RedisKeys.membership(campaignId, userId));
+
+        assertThat(membershipCache.findTeamId(campaignId, userId)).contains(42L);
+    }
+
+    @Test
+    void aMembershipFoundInRedisIsKeptInMemory() {
+        redis.opsForValue().set(RedisKeys.membership(campaignId, userId), "42");
+        assertThat(membershipCache.findTeamId(campaignId, userId)).contains(42L);
+        redis.delete(RedisKeys.membership(campaignId, userId));
+
+        assertThat(membershipCache.findTeamId(campaignId, userId)).contains(42L);
+    }
+
+    @Test
+    void withoutLocalEntriesEveryLookupAsksRedis() {
+        CacheProperties redisOnly = new CacheProperties(true, cacheProperties.teamTtl(),
+                cacheProperties.membershipTtl(), 0);
+        RedisMembershipCache cache = new RedisMembershipCache(redis, redisOnly, new RedisCircuitBreaker(clock, Duration.ofSeconds(1)));
+        cache.remember(campaignId, userId, 42);
+        redis.delete(RedisKeys.membership(campaignId, userId));
+
+        assertThat(cache.findTeamId(campaignId, userId)).isEmpty();
+    }
+
+    @Test
+    void aMissIsNotRemembered() {
+        assertThat(membershipCache.findTeamId(campaignId, userId)).isEmpty();
+        redis.opsForValue().set(RedisKeys.membership(campaignId, userId), "42");
+
+        assertThat(membershipCache.findTeamId(campaignId, userId)).contains(42L);
     }
 
     @Test

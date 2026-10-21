@@ -59,6 +59,7 @@ team-chest:
     enabled: true
     team-ttl: 30s
     membership-ttl: 10m
+    membership-local-entries: 100000
   rate-limit:
     enabled: true
     join:

@@ -6,7 +6,6 @@ import io.github.eytoptas.teamchest.application.ratelimit.RateLimiter;
 import java.math.BigDecimal;
 import java.time.Duration;
 import java.util.List;
-import org.springframework.core.io.ClassPathResource;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.script.RedisScript;
 import org.springframework.stereotype.Component;
@@ -16,7 +15,7 @@ class RedisTokenBucketRateLimiter implements RateLimiter {
 
     @SuppressWarnings("rawtypes")
     private static final RedisScript<List> TOKEN_BUCKET =
-            RedisScript.of(new ClassPathResource("redis/token-bucket.lua"), List.class);
+            LuaScripts.load("redis/token-bucket.lua", List.class);
 
     private final StringRedisTemplate redis;
     private final RateLimitProperties properties;

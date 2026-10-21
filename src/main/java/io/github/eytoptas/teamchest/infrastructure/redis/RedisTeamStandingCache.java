@@ -6,7 +6,6 @@ import java.util.List;
 import java.util.Optional;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.core.io.ClassPathResource;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.script.RedisScript;
 import org.springframework.stereotype.Component;
@@ -17,9 +16,9 @@ class RedisTeamStandingCache implements TeamStandingCache {
 
     private static final Logger log = LoggerFactory.getLogger(RedisTeamStandingCache.class);
     private static final RedisScript<Long> FILL =
-            RedisScript.of(new ClassPathResource("redis/team-standing-fill.lua"), Long.class);
+            LuaScripts.load("redis/team-standing-fill.lua", Long.class);
     private static final RedisScript<Long> INVALIDATE =
-            RedisScript.of(new ClassPathResource("redis/team-standing-invalidate.lua"), Long.class);
+            LuaScripts.load("redis/team-standing-invalidate.lua", Long.class);
     private static final String VERSION = "v";
     private static final String DATA = "d";
     private static final List<Object> FIELDS = List.of(VERSION, DATA);
