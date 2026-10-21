@@ -30,4 +30,8 @@ public enum ErrorCode {
     public int status() {
         return status;
     }
+
+    public String messageKey() {
+        return "error." + name();
+    }
 }

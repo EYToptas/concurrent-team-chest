@@ -18,6 +18,8 @@ import io.github.eytoptas.teamchest.application.transaction.ConcurrencyRetriesEx
 import io.github.eytoptas.teamchest.domain.campaign.CampaignPhase;
 import java.time.Duration;
 import org.junit.jupiter.api.Test;
+import org.springframework.context.MessageSource;
+import org.springframework.context.support.ResourceBundleMessageSource;
 import org.springframework.dao.CannotAcquireLockException;
 import org.springframework.http.HttpHeaders;
 import org.springframework.test.web.servlet.MockMvc;
@@ -27,8 +29,15 @@ import org.springframework.web.bind.annotation.RestController;
 
 class ApiExceptionHandlerTest {
 
+    private static MessageSource messageSource() {
+        ResourceBundleMessageSource source = new ResourceBundleMessageSource();
+        source.setBasename("messages");
+        source.setDefaultEncoding("UTF-8");
+        return source;
+    }
+
     private final MockMvc mvc = MockMvcBuilders.standaloneSetup(new FailingController())
-            .setControllerAdvice(new ApiExceptionHandler())
+            .setControllerAdvice(new ApiExceptionHandler(new ErrorMessages(messageSource())))
             .build();
 
     @Test

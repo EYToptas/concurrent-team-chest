@@ -31,7 +31,7 @@ public class TeamChestController {
 
     static final String IDEMPOTENCY_KEY = "Idempotency-Key";
     static final String IDEMPOTENCY_KEY_PATTERN = "[A-Za-z0-9._:-]{1,64}";
-    private static final String IDEMPOTENCY_KEY_MESSAGE = "must be 1-64 characters of A-Z a-z 0-9 . _ : -";
+    private static final String IDEMPOTENCY_KEY_MESSAGE = "{validation.idempotency-key}";
 
     private final JoinService joinService;
     private final ProgressService progressService;

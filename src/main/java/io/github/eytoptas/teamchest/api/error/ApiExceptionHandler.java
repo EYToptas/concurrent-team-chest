@@ -32,37 +32,43 @@ public class ApiExceptionHandler {
     private static final Logger log = LoggerFactory.getLogger(ApiExceptionHandler.class);
     static final String RETRY_AFTER_SECONDS = "1";
 
+    private final ErrorMessages messages;
+
+    public ApiExceptionHandler(ErrorMessages messages) {
+        this.messages = messages;
+    }
+
     @ExceptionHandler(RejectedRequestException.class)
     ResponseEntity<ErrorResponse> rejected(RejectedRequestException e) {
-        return respond(ErrorResponse.of(e.code(), e.getMessage(), e.details()));
+        return respond(ErrorResponse.of(e.code(), messages.of(e.code()), e.details()));
     }
 
     @ExceptionHandler(CampaignNotFoundException.class)
     ResponseEntity<ErrorResponse> campaignNotFound(CampaignNotFoundException e) {
-        return respond(ErrorResponse.of(ErrorCode.CAMPAIGN_NOT_FOUND, e.getMessage(), Map.of("campaignId", e.getCampaignId())));
+        return respond(error(ErrorCode.CAMPAIGN_NOT_FOUND, Map.of("campaignId", e.getCampaignId()), e.getCampaignId()));
     }
 
     @ExceptionHandler(NoActiveCampaignException.class)
     ResponseEntity<ErrorResponse> noActiveCampaign(NoActiveCampaignException e) {
-        return respond(ErrorResponse.of(ErrorCode.NO_ACTIVE_CAMPAIGN, e.getMessage()));
+        return respond(error(ErrorCode.NO_ACTIVE_CAMPAIGN));
     }
 
     @ExceptionHandler(CampaignNotActiveException.class)
     ResponseEntity<ErrorResponse> campaignNotActive(CampaignNotActiveException e) {
-        return respond(ErrorResponse.of(ErrorCode.CAMPAIGN_NOT_ACTIVE, e.getMessage(),
-                Map.of("campaignId", e.getCampaignId(), "phase", e.getPhase())));
+        return respond(error(ErrorCode.CAMPAIGN_NOT_ACTIVE, Map.of("campaignId", e.getCampaignId(), "phase", e.getPhase()),
+                e.getCampaignId(), e.getPhase()));
     }
 
     @ExceptionHandler(IdempotencyKeyReuseException.class)
     ResponseEntity<ErrorResponse> idempotencyKeyReused(IdempotencyKeyReuseException e) {
-        return respond(ErrorResponse.of(ErrorCode.IDEMPOTENCY_KEY_REUSED, e.getMessage()));
+        return respond(error(ErrorCode.IDEMPOTENCY_KEY_REUSED));
     }
 
     @ExceptionHandler(RateLimitExceededException.class)
     ResponseEntity<ErrorResponse> rateLimited(RateLimitExceededException e) {
         long retryAfterSeconds = e.retryAfterSeconds();
-        ErrorResponse body = ErrorResponse.of(ErrorCode.RATE_LIMITED, e.getMessage(),
-                Map.of("operation", e.operation().key(), "retryAfterSeconds", retryAfterSeconds));
+        ErrorResponse body = error(ErrorCode.RATE_LIMITED,
+                Map.of("operation", e.operation().key(), "retryAfterSeconds", retryAfterSeconds), e.operation().key());
         return ResponseEntity.status(body.status())
                 .header(HttpHeaders.RETRY_AFTER, Long.toString(retryAfterSeconds))
                 .body(body);
@@ -98,44 +104,52 @@ public class ApiExceptionHandler {
 
     @ExceptionHandler(MissingRequestHeaderException.class)
     ResponseEntity<ErrorResponse> missingHeader(MissingRequestHeaderException e) {
-        return validationFailed(List.of("Missing request header " + e.getHeaderName()));
+        return validationFailed(List.of(messages.get("validation.missing-header", e.getHeaderName())));
     }
 
     @ExceptionHandler(MethodArgumentTypeMismatchException.class)
     ResponseEntity<ErrorResponse> typeMismatch(MethodArgumentTypeMismatchException e) {
-        return validationFailed(List.of(e.getName() + ": invalid value"));
+        return validationFailed(List.of(messages.get("validation.invalid-value", e.getName())));
     }
 
     @ExceptionHandler(HttpMessageNotReadableException.class)
     ResponseEntity<ErrorResponse> unreadable(HttpMessageNotReadableException e) {
-        return respond(ErrorResponse.of(ErrorCode.MALFORMED_REQUEST, "The request body is missing or is not valid JSON"));
+        return respond(error(ErrorCode.MALFORMED_REQUEST));
     }
 
     @ExceptionHandler(HttpRequestMethodNotSupportedException.class)
     ResponseEntity<ErrorResponse> methodNotAllowed(HttpRequestMethodNotSupportedException e) {
-        return respond(ErrorResponse.of(ErrorCode.METHOD_NOT_ALLOWED, e.getMessage()));
+        return respond(error(ErrorCode.METHOD_NOT_ALLOWED, Map.of(), e.getMethod()));
     }
 
     @ExceptionHandler(HttpMediaTypeNotSupportedException.class)
     ResponseEntity<ErrorResponse> unsupportedMediaType(HttpMediaTypeNotSupportedException e) {
-        return respond(ErrorResponse.of(ErrorCode.UNSUPPORTED_MEDIA_TYPE, "Content-Type must be application/json"));
+        return respond(error(ErrorCode.UNSUPPORTED_MEDIA_TYPE));
     }
 
     @ExceptionHandler(NoResourceFoundException.class)
     ResponseEntity<ErrorResponse> notFound(NoResourceFoundException e) {
-        return respond(ErrorResponse.of(ErrorCode.NOT_FOUND, "No such endpoint"));
+        return respond(error(ErrorCode.NOT_FOUND));
     }
 
     @ExceptionHandler(Exception.class)
     ResponseEntity<ErrorResponse> unexpected(Exception e) {
         log.error("Unexpected error while handling a request", e);
-        return respond(ErrorResponse.of(ErrorCode.INTERNAL_ERROR, "Internal error"));
+        return respond(error(ErrorCode.INTERNAL_ERROR));
     }
 
-    private static ResponseEntity<ErrorResponse> validationFailed(List<String> errors) {
+    private ResponseEntity<ErrorResponse> validationFailed(List<String> errors) {
         Map<String, Object> details = new LinkedHashMap<>();
         details.put("errors", errors);
-        return respond(ErrorResponse.of(ErrorCode.VALIDATION_FAILED, "The request is not valid", details));
+        return respond(error(ErrorCode.VALIDATION_FAILED, details));
+    }
+
+    private ErrorResponse error(ErrorCode code) {
+        return ErrorResponse.of(code, messages.of(code));
+    }
+
+    private ErrorResponse error(ErrorCode code, Map<String, Object> details, Object... arguments) {
+        return ErrorResponse.of(code, messages.of(code, arguments), details);
     }
 
     private static String describe(String parameter, MessageSourceResolvable error) {
@@ -143,8 +157,8 @@ public class ApiExceptionHandler {
         return field + ": " + error.getDefaultMessage();
     }
 
-    private static ResponseEntity<ErrorResponse> serviceBusy() {
-        ErrorResponse body = ErrorResponse.of(ErrorCode.SERVICE_BUSY, "The request could not be completed, retry later");
+    private ResponseEntity<ErrorResponse> serviceBusy() {
+        ErrorResponse body = error(ErrorCode.SERVICE_BUSY);
         return ResponseEntity.status(body.status()).header(HttpHeaders.RETRY_AFTER, RETRY_AFTER_SECONDS).body(body);
     }
 

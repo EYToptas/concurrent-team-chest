@@ -10,32 +10,32 @@ public class RejectedRequestException extends RuntimeException {
     private final ErrorCode code;
     private final Map<String, Object> details;
 
-    private RejectedRequestException(ErrorCode code, String message, Map<String, Object> details) {
-        super(message);
+    private RejectedRequestException(ErrorCode code, Map<String, Object> details) {
+        super(code.name());
         this.code = code;
         this.details = details;
     }
 
     public static RejectedRequestException teamCompleted(ProgressResult.TeamAlreadyCompleted rejection) {
-        return new RejectedRequestException(ErrorCode.TEAM_COMPLETED, "The team has already reached its target",
+        return new RejectedRequestException(ErrorCode.TEAM_COMPLETED,
                 details("campaignId", rejection.campaignId(), "teamId", rejection.teamId(),
                         "targetPoints", rejection.targetPoints()));
     }
 
     public static RejectedRequestException chestNotReady(ClaimResult.ChestNotReady rejection) {
-        return new RejectedRequestException(ErrorCode.CHEST_NOT_READY, "The team has not reached its target yet",
+        return new RejectedRequestException(ErrorCode.CHEST_NOT_READY,
                 details("campaignId", rejection.campaignId(), "teamId", rejection.teamId(),
                         "teamPoints", rejection.teamPoints(), "targetPoints", rejection.targetPoints()));
     }
 
     public static RejectedRequestException alreadyClaimed(ClaimResult.AlreadyClaimed rejection) {
-        return new RejectedRequestException(ErrorCode.ALREADY_CLAIMED, "The chest reward was already claimed",
+        return new RejectedRequestException(ErrorCode.ALREADY_CLAIMED,
                 details("campaignId", rejection.campaignId(), "teamId", rejection.teamId(),
                         "claimedAt", rejection.claimedAt()));
     }
 
     public static RejectedRequestException notAMember(long campaignId) {
-        return new RejectedRequestException(ErrorCode.NOT_A_MEMBER, "The user has not joined this campaign",
+        return new RejectedRequestException(ErrorCode.NOT_A_MEMBER,
                 details("campaignId", campaignId));
     }
 

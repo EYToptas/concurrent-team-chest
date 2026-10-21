@@ -9,7 +9,7 @@ public class RateLimitExceededException extends RuntimeException {
     private final Duration retryAfter;
 
     public RateLimitExceededException(RateLimitedOperation operation, Duration retryAfter) {
-        super("Too many " + operation.key() + " requests, retry later");
+        super(operation.key());
         this.operation = operation;
         this.retryAfter = retryAfter;
     }
