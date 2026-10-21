@@ -42,8 +42,20 @@ Options of `run.ps1`: `-Mix` (a mix of `perf/k6/mixes.json`, default `mixed`), `
 `-KeepRunning`, `-Jfr` (Java Flight Recording, see below), `-Gc default|parallel` (the JVM's
 garbage collector for the test only: `default` leaves the choice to the JVM, which picks Serial
 under the 1g limit; `parallel` adds `-XX:+UseParallelGC`; the heap limit stays the same; the run's
-directory name ends in `-gc-parallel`), `-Smoke` (50 req/s, 60 s warm-up + 60 s).
-`capacity.ps1` passes `-Gc` to every step. `Get-Help .\perf\run.ps1 -Detailed` lists them.
+directory name ends in `-gc-parallel`), `-DbPool <n>` (the application's database connection pool
+for the test only, `spring.datasource.hikari.maximum-pool-size` set as a JVM system property, so the
+image and `application.yaml` stay unchanged; without it the application's own setting, 20, applies;
+before the load the run checks the size the running pool reports and that MySQL's `max_connections`
+leaves room for it; the directory name ends in `-pool<n>`), `-RedoLogCapacityMiB <n>` and
+`-IoCapacity <n>` (InnoDB's `innodb_redo_log_capacity` in MiB and `innodb_io_capacity` for the test
+only: `perf/sql/set-globals.sql` sets them with `SET GLOBAL` on the fresh server before the data is
+seeded; `compose.yaml`, the durability settings and the data stay as they are, and the next run starts
+with MySQL's defaults; before the load the run checks that they are in effect and that the binary log,
+the durability of `compose.yaml` (`sync_binlog=1`, `innodb_flush_log_at_trx_commit=1`)
+and the doublewrite buffer are in effect; the directory
+name ends in `-redo<n>` / `-io<n>`), `-Smoke` (50 req/s, 60 s warm-up + 60 s).
+`capacity.ps1` passes `-Gc`, `-DbPool`, `-RedoLogCapacityMiB` and `-IoCapacity` to every step.
+The `param` block at the top of `run.ps1` lists them.
 
 ## What a run does
 
@@ -275,13 +287,21 @@ update), and one stored outcome per claim.
 | `app.log` | application log, with the JVM options it picked up, the collector (`Using ...`) and one line per GC pause |
 | `app.jfr`, `jfr-summary.md`, `jfr-summary.json` | with `-Jfr`: the Java Flight Recording (open with JDK Mission Control) and its summary |
 
+`report.ps1` compares runs in two tables: the main figures, and the database path (DB pool, p95
+overall and per endpoint, dropped requests, Hikari active/pending, pool wait, commits/s, COMMIT,
+redo and binary log sync times, commits per sync, redo log capacity, checkpoint age maximum, pages
+flushed and data file syncs per second, failed invariant checks).
+
 `report.md` contains: the k6 tables (steady phase, latency over time) and targets; k6 warnings;
 the measurement quality (window, clock check, coverage per source); for the window: average and
 peak CPU (in cores) and memory per container, application gauges, server-side time per endpoint,
 database connection wait and hold time, Redis command time and GC pauses (also over the whole run),
 client vs. server latency, MySQL counters per second (statements, rows, row lock waits, deadlocks,
 lock wait timeouts, buffer pool reads, fsyncs) and the average time of a COMMIT and of a redo log
-and binary log sync, estimated cache hit ratios; the statements with the most server time and
+and binary log sync; redo log and page flushing (redo log capacity, checkpoint age average and
+maximum and its share of the capacity, dirty pages, pages flushed and doublewrite pages per second,
+data file and doublewrite syncs with their mean time, MiB/s written to each file kind); estimated
+cache hit ratios; the statements with the most server time and
 Redis commands, CPU and memory (whole run); a JVM section: the collector (option, JVM log and
 metrics), app/JVM/GC/JIT CPU, GC pauses per second, mean and maximum pause, full GCs and the time
 spent in pauses, for the warm-up, the window and every 10 s; the invariant checks; the environment,
@@ -296,7 +316,7 @@ three runs per configuration). Where to look:
 |---|---|---|
 | app CPU close to `-AppCpus` cores, CPU quota throttling in the JFR summary | application CPU (JWT signature checks, JSON, JPA, ...) | `-Jfr`: exclusive components and hot methods, CPU ms per request |
 | `tomcat.threads.busy` at `tomcat.threads.config.max`, large client vs. server difference | requests waiting for a worker thread (the server is behind) | what the workers do: JFR waits and CPU |
-| `hikaricp.connections.pending` > 0, high `db.pool.acquire` | connection pool or slow transactions | `db.pool.usage`, MySQL row lock waits and top statements |
+| `hikaricp.connections.pending` > 0, high `db.pool.acquire` | connection pool or slow transactions | `db.pool.usage`, MySQL row lock waits and top statements; `report.ps1`'s database path table; a run with `-DbPool` (size it from calls/s x hold time, then measure) |
 | high `innodb_row_lock_waits` / `innodb_row_lock_time`, deadlocks | lock contention (hot rows: the join cursor, a team) | per-endpoint latency, `/join` and `/progress` p99, `join-only` |
 | high `/join` latency | the join cursor | `join.*` timers: `join.queue` (waiting in the instance for a group transaction), `join.lock.wait` (cursor lock), `join.lock.work` vs. `join.commit` (work under the lock vs. flush + COMMIT), joins per group transaction |
 | MySQL CPU high, many `rows/call` or `no index` in top statements | a query plan | the statement in the report |
@@ -306,6 +326,40 @@ three runs per configuration). Where to look:
 | p95 still falling in the latency-over-time table during the steady phase, app CPU high at a low rate | the JVM was still compiling (warm-up too short) | JIT compiler CPU in the JVM section; longer `-Warmup` |
 | `jvm.gc.pause` total high, long or full pauses, heap at its maximum | memory / GC | JVM section (pauses, GC threads CPU); `-Gc parallel`; `-AppMemory`, `-Jfr` allocation |
 | dropped iterations while the application is far from its limits, k6 using the CPU the other containers need | the load generator itself | k6 CPU in the resources table; a machine with more cores |
+
+## Storage benchmark
+
+`perf/storage-bench.ps1` measures how long a durable write takes on Docker Desktop's disk without the
+application, to separate the storage from the application in the load tests' COMMIT times:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\perf\storage-bench.ps1
+```
+
+1. **fio** on a new Docker named volume (the same kind of volume as MySQL's data): 16 KiB writes,
+   each followed by `fdatasync`, with one job and with `-FioParallel` (4) parallel jobs, on
+   preallocated files that are overwritten (like the redo log) and on growing files (like the binary
+   log). Durable writes/s and the fdatasync latency (mean, p50, p95, p99, max).
+2. **MySQL 8.4 alone**: a separate `mysql:8.4` container on another new volume, with the server options
+   of `compose.yaml` and the default durability (`sync_binlog=1`, `innodb_flush_log_at_trx_commit=1`,
+   binary log on; checked before measuring), and a client (`perf/storage/commit_bench.py`, Python +
+   PyMySQL) running `INSERT` + `COMMIT` transactions with 1, 4, 8, 16 and 32 connections
+   (`-Concurrency`), 5 s warm-up + 30 s per level. Commits/s, COMMIT latency (mean, p50, p95, p99,
+   max), redo and binary log syncs per second, their mean time and busy share, and commits per sync
+   (MySQL's group commit).
+3. **Report** (`perf/results/storage-<time>/report.md`, with `fio-*.json`, `commit-bench.json` and
+   `storage.json`): both parts next to the two most recent mixed 500 req/s load tests
+   (`-CompareRuns` to choose others), with the benchmark level closest in commit rate.
+
+Times are taken with monotonic clocks inside the Docker VM (fio, the client) and MySQL's cycle
+counter (log syncs), never with the wall clock that Docker Desktop steps; the VM's clock rate against
+this computer's is measured during each part and reported. The load-test stack must not be running
+(the script stops if it is). Everything the script creates is named `team-chest-bench-<time>-...`
+and removed at the end, also after a failure; the load test's MySQL data and volumes are never
+touched. The fio files take up to about 2 GB in Docker's disk while it runs (Docker Desktop does
+not shrink its disk image afterwards). About 8 minutes with the defaults; `-SkipFio`, `-SkipCommit`,
+`-FioSeconds`, `-CommitSeconds`, `-SkipBuild` (reuse the two benchmark images) and `-KeepVolumes`
+change that.
 
 ## Fair measurement
 

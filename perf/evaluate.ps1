@@ -240,6 +240,10 @@ $AppCpus = [string] $raw.settings.appCpus
 $AppMemory = [string] $raw.settings.appMemory
 $Jfr = [bool] $raw.settings.jfr
 $GcOption = Get-JsonValue $raw.settings 'gc'
+$DbPoolOption = Get-JsonValue $raw.settings 'dbPool'
+$DbPoolMax = Get-JsonValue $raw.settings 'dbPoolMax'
+$RedoOption = Get-JsonValue $raw.settings 'redoLogCapacityMiB'
+$IoOption = Get-JsonValue $raw.settings 'ioCapacity'
 $sharePercent = [ordered]@{}
 foreach ($endpoint in $Endpoints) {
     $value = Get-JsonValue $raw.settings.sharesPercent $endpoint
@@ -679,7 +683,8 @@ $jvmRuntime = [ordered]@{
 }
 
 $loadSeconds = ($loadEnd - $loadStart).TotalSeconds
-$gaugeNames = @('threads_connected', 'threads_running', 'max_used_connections', 'innodb_row_lock_time_max')
+$gaugeNames = @('threads_connected', 'threads_running', 'max_used_connections', 'innodb_row_lock_time_max',
+    'innodb_buffer_pool_pages_dirty', 'innodb_redo_log_capacity_resized', 'innodb.checkpoint_age_bytes')
 $isGauge = { param($key) ($gaugeNames -ccontains $key) -or $key.StartsWith('config.') -or $key.EndsWith('.timer_wrapped') }
 $loadStartMs = [double] [DateTimeOffset]::new($loadStart).ToUnixTimeMilliseconds()
 $loadEndMs = [double] [DateTimeOffset]::new($loadEnd).ToUnixTimeMilliseconds()
@@ -749,6 +754,43 @@ $commitPath = [ordered]@{
     commitStatus = $commitStatus
     redoLogSyncMeanMs = & $meanInWindow 'file_io.redo_log.sync_time_us' 'file_io.redo_log.sync_count' 0.001
     binlogSyncMeanMs = & $meanInWindow 'file_io.binlog.sync_time_us' 'file_io.binlog.sync_count' 0.001
+}
+
+$gaugeInWindow = {
+    param([string] $Name)
+    if (-not $mysqlCovered) { return $null }
+    $rows = @($okMysql | Where-Object { $_.name -ceq $Name })
+    if ($rows.Count -eq 0) { return $null }
+    return Measure-Window $rows 'value' $windowStart $windowEnd
+}
+$perSecond = {
+    param([string] $Key)
+    if (-not $mysql.Contains($Key) -or $mysql[$Key].steadyStatus -cne 'ok') { return $null }
+    return $mysql[$Key].steady
+}
+$redoCapacity = $null
+if ($null -ne $mysqlAfter['config.innodb_redo_log_capacity']) { $redoCapacity = [double] $mysqlAfter['config.innodb_redo_log_capacity'] }
+$checkpointAge = & $gaugeInWindow 'innodb.checkpoint_age_bytes'
+$dirtyPages = & $gaugeInWindow 'innodb_buffer_pool_pages_dirty'
+$innodbFlushing = [ordered]@{
+    redoLogCapacityBytes = $redoCapacity
+    ioCapacity = $(if ($null -ne $mysqlAfter['config.innodb_io_capacity']) { [double] $mysqlAfter['config.innodb_io_capacity'] } else { $null })
+    doublewrite = $mysqlAfter['config.innodb_doublewrite']
+    checkpointAgeBytes = $checkpointAge
+    checkpointAgeMaxShare = $(if ($null -ne $checkpointAge -and $redoCapacity -gt 0) { $checkpointAge.max / $redoCapacity } else { $null })
+    dirtyPages = $dirtyPages
+    pagesFlushedPerSecond = & $perSecond 'innodb_buffer_pool_pages_flushed'
+    doublewritePagesPerSecond = & $perSecond 'innodb_dblwr_pages_written'
+    waitFreePerSecond = & $perSecond 'innodb_buffer_pool_wait_free'
+    dataFileSyncsPerSecond = & $perSecond 'file_io.data_file.sync_count'
+    dataFileSyncMeanMs = & $meanInWindow 'file_io.data_file.sync_time_us' 'file_io.data_file.sync_count' 0.001
+    doublewriteSyncsPerSecond = & $perSecond 'file_io.dblwr.sync_count'
+    doublewriteSyncMeanMs = & $meanInWindow 'file_io.dblwr.sync_time_us' 'file_io.dblwr.sync_count' 0.001
+    innodbFsyncsPerSecond = & $perSecond 'innodb_data_fsyncs'
+    redoBytesPerSecond = & $perSecond 'file_io.redo_log.write_bytes'
+    binlogBytesPerSecond = & $perSecond 'file_io.binlog.write_bytes'
+    dataFileBytesPerSecond = & $perSecond 'file_io.data_file.write_bytes'
+    doublewriteBytesPerSecond = & $perSecond 'file_io.dblwr.write_bytes'
 }
 
 $typeAnomalies = @{}
@@ -993,7 +1035,8 @@ $run = [ordered]@{
     runId = $runId
     passed = $passed
     settings = [ordered]@{ mix = $Mix; sharesPercent = $sharePercent; cache = $Cache; rate = $Rate; warmupSeconds = $Warmup
-        durationSeconds = $Duration; appCpus = $AppCpus; appMemory = $AppMemory; jfr = $Jfr; gc = $GcOption }
+        durationSeconds = $Duration; appCpus = $AppCpus; appMemory = $AppMemory; jfr = $Jfr; gc = $GcOption
+        dbPool = $DbPoolOption; dbPoolMax = $DbPoolMax; redoLogCapacityMiB = $RedoOption; ioCapacity = $IoOption }
     data = $raw.data
     k6 = [ordered]@{ exitCode = $k6ExitCode; report = $k6 }
     window = [ordered]@{ name = $windowName; basis = $windowBasis; startEpochMs = $windowStart; endEpochMs = $windowEnd
@@ -1009,6 +1052,7 @@ $run = [ordered]@{
     jvmRuntime = $jvmRuntime
     tomcatPool = $tomcatPool
     commitPath = $commitPath
+    innodbFlushing = $innodbFlushing
     containers = $containers
     appCpuMsPerRequest = $appCpuMsPerRequest
     serverPerSecond = $serverPerSecond
@@ -1043,8 +1087,25 @@ $md.Add($alignmentText + '.')
 $md.Add('')
 foreach ($note in $rawNotes) { $md.Add("> $note"); $md.Add('') }
 $shareText = ($activeEndpoints | ForEach-Object { '{0} {1} %' -f $_, $sharePercent[$_] }) -join ', '
+$poolSize = $DbPoolMax
+if ($null -eq $poolSize -and $gauges.Contains('hikaricp.connections.max') -and $null -ne $gauges['hikaricp.connections.max']) {
+    $poolSize = $gauges['hikaricp.connections.max'].max
+}
+$poolText = 'DB pool ' + $(if ($null -eq $poolSize) { 'not recorded' } else { Format-Number $poolSize 0 }) +
+    $(if ($null -ne $DbPoolOption -and [int] $DbPoolOption -gt 0) { ' (run.ps1 -DbPool)' } else { ' (application default)' })
+$settingSource = {
+    param($Value, $Option, [string] $Parameter)
+    if ($null -eq $Value) { return 'not recorded' }
+    if ($null -ne $Option -and [int] $Option -gt 0) { return "$Value (run.ps1 $Parameter)" }
+    return "$Value (MySQL default)"
+}
+$innodbText = 'MySQL redo log capacity ' +
+    (& $settingSource $(if ($null -eq $redoCapacity) { $null } else { (Format-Number ($redoCapacity / 1MB) 0) + ' MiB' }) $RedoOption '-RedoLogCapacityMiB') +
+    ', innodb_io_capacity ' +
+    (& $settingSource $(if ($null -eq $innodbFlushing.ioCapacity) { $null } else { Format-Number $innodbFlushing.ioCapacity 0 }) $IoOption '-IoCapacity')
 $md.Add("Load: $Rate req/s, mix $Mix ($shareText), cache $Cache, $Warmup s warm-up + $Duration s steady. " +
-    "Application: 1 instance, $AppCpus CPU, $AppMemory, GC option $(if ($null -eq $GcOption) { 'not recorded' } else { $GcOption })$(if ($Jfr) { ', with a Java Flight Recording' }). " +
+    "Application: 1 instance, $AppCpus CPU, $AppMemory, GC option $(if ($null -eq $GcOption) { 'not recorded' } else { $GcOption }), $poolText$(if ($Jfr) { ', with a Java Flight Recording' }). " +
+    "$innodbText. " +
     "Data: $teams teams ($completedTeams completed), $joinUsers join users.")
 $md.Add('')
 $k6Markdown = Join-Path $resultDir 'k6-report.md'
@@ -1275,12 +1336,39 @@ $withMs = { param($value) if ($null -eq $value) { $NotMeasured } else { (Format-
 $durableCommits = ("Durable commits ({0}): COMMIT {1}; redo log sync {2}, binary log sync {3} on average " +
     '(sync = fsync of the log file; timed with the CPU cycle counter, not affected by wall-clock steps). Settings: ' +
     'log_bin={4}, sync_binlog={5}, innodb_flush_log_at_trx_commit={6}, innodb_buffer_pool_size={7} MiB, ' +
-    'innodb_log_writer_threads={8}.') -f $windowName, $commitText,
+    'innodb_log_writer_threads={8}, max_connections={9}, innodb_doublewrite={10}, innodb_redo_log_capacity={11} MiB, innodb_io_capacity={12}.') -f $windowName, $commitText,
     (& $withMs $commitPath.redoLogSyncMeanMs), (& $withMs $commitPath.binlogSyncMeanMs),
     $mysqlAfter['config.log_bin'], $mysqlAfter['config.sync_binlog'], $mysqlAfter['config.innodb_flush_log_at_trx_commit'],
     (Format-Number ([double] $mysqlAfter['config.innodb_buffer_pool_size'] / 1MB) 0),
-    $(if ($null -eq $mysqlAfter['config.innodb_log_writer_threads']) { $NotMeasured } else { $mysqlAfter['config.innodb_log_writer_threads'] })
+    $(if ($null -eq $mysqlAfter['config.innodb_log_writer_threads']) { $NotMeasured } else { $mysqlAfter['config.innodb_log_writer_threads'] }),
+    $(if ($null -eq $mysqlAfter['config.max_connections']) { $NotMeasured } else { $mysqlAfter['config.max_connections'] }),
+    $(if ($null -eq $mysqlAfter['config.innodb_doublewrite']) { $NotMeasured } elseif ("$($mysqlAfter['config.innodb_doublewrite'])" -ceq '1') { 'ON' } else { 'OFF' }),
+    $(if ($null -eq $redoCapacity) { $NotMeasured } else { Format-Number ($redoCapacity / 1MB) 0 }),
+    $(if ($null -eq $innodbFlushing.ioCapacity) { $NotMeasured } else { Format-Number $innodbFlushing.ioCapacity 0 })
 $md.Add($durableCommits)
+$md.Add('')
+$f = $innodbFlushing
+$mib = { param($bytes) if ($null -eq $bytes) { $NotMeasured } else { Format-Number ($bytes / 1MB) 1 } }
+$stat = { param($measured, [string] $key) if ($null -eq $measured) { $null } else { $measured[$key] } }
+$md.Add("Redo log and page flushing ($windowName):")
+$md.Add('')
+$md.Add('| measure | value |')
+$md.Add('|---|---:|')
+$md.Add(('| checkpoint age avg / max (MiB) | {0} / {1} |' -f (& $mib (& $stat $f.checkpointAgeBytes 'avg')), (& $mib (& $stat $f.checkpointAgeBytes 'max'))))
+$md.Add(('| checkpoint age max / redo log capacity | {0} |' -f (Format-Percent $f.checkpointAgeMaxShare 1)))
+$md.Add(('| dirty pages avg / max | {0} / {1} |' -f (Format-Measured (& $stat $f.dirtyPages 'avg') 0), (Format-Measured (& $stat $f.dirtyPages 'max') 0)))
+$md.Add(('| pages flushed/s (doublewrite pages/s) | {0} ({1}) |' -f (Format-Measured $f.pagesFlushedPerSecond 1), (Format-Measured $f.doublewritePagesPerSecond 1)))
+$md.Add(('| waits for a free page/s | {0} |' -f (Format-Measured $f.waitFreePerSecond 2)))
+$md.Add(('| data file syncs/s, mean ms | {0}, {1} |' -f (Format-Measured $f.dataFileSyncsPerSecond 1), (Format-Measured $f.dataFileSyncMeanMs 2)))
+$md.Add(('| doublewrite file syncs/s, mean ms | {0}, {1} |' -f (Format-Measured $f.doublewriteSyncsPerSecond 1), (Format-Measured $f.doublewriteSyncMeanMs 2)))
+$md.Add(('| all InnoDB fsyncs/s (innodb_data_fsyncs, redo log included) | {0} |' -f (Format-Measured $f.innodbFsyncsPerSecond 1)))
+$md.Add(('| MiB/s written: redo log, binary log, data files, doublewrite | {0}, {1}, {2}, {3} |' -f (& $mib $f.redoBytesPerSecond),
+    (& $mib $f.binlogBytesPerSecond), (& $mib $f.dataFileBytesPerSecond), (& $mib $f.doublewriteBytesPerSecond)))
+$md.Add('')
+$md.Add('Checkpoint age = redo log written but not yet checkpointed (current LSN - checkpoint LSN, in bytes, no clock); ' +
+    'when it approaches the redo log capacity, InnoDB flushes dirty pages harder and can stall writes. Checkpoint age ' +
+    "and dirty pages: average and maximum of the samples (every ~2 s; $NotMeasured if the samples do not cover the window); " +
+    'the other rows are counters per second. Sync times: performance_schema wait timer (cycle counter), like the log syncs.')
 $md.Add('')
 $md.Add("| counter | $windowName per second | whole run total |")
 $md.Add('|---|---:|---:|')

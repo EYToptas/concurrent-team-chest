@@ -10,7 +10,8 @@ services:
       MYSQL_USER: teamchest
       MYSQL_PASSWORD: ${MYSQL_PASSWORD:?set MYSQL_PASSWORD in .env}
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?set MYSQL_ROOT_PASSWORD in .env}
-    command: ["--skip-name-resolve", "--max-connections=200", "--innodb-log-writer-threads=OFF"]
+    command: ["--skip-name-resolve", "--max-connections=200", "--innodb-log-writer-threads=OFF",
+              "--innodb-flush-log-at-trx-commit=1", "--sync-binlog=1"]
     volumes:
       - mysql-data:/var/lib/mysql
     healthcheck:

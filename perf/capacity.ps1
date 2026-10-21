@@ -24,6 +24,14 @@ param(
     [ValidateSet('default', 'parallel')]
     [string] $Gc = 'default',
 
+    [ValidateRange(0, 150)]
+    [int] $DbPool = 0,
+
+    [ValidateRange(0, 16384)]
+    [int] $RedoLogCapacityMiB = 0,
+    [ValidateRange(0, 100000)]
+    [int] $IoCapacity = 0,
+
     [switch] $SkipBuild
 )
 
@@ -57,8 +65,9 @@ $Cache = $Cache.ToLowerInvariant()
 $runScript = Join-Path $PSScriptRoot 'run.ps1'
 $resultsDir = Join-Path $PSScriptRoot 'results'
 $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
-$summaryFile = Join-Path $resultsDir ('capacity-{0}-{1}-cache-{2}-{3}cpu{4}.md' -f $stamp, $Mix, $Cache, $AppCpus,
-    $(if ($Gc -cne 'default') { "-gc-$Gc" } else { '' }))
+$runSuffix = $(if ($Gc -cne 'default') { "-gc-$Gc" } else { '' }) + $(if ($DbPool -gt 0) { "-pool$DbPool" } else { '' }) +
+    $(if ($RedoLogCapacityMiB -gt 0) { "-redo$RedoLogCapacityMiB" } else { '' }) + $(if ($IoCapacity -gt 0) { "-io$IoCapacity" } else { '' })
+$summaryFile = Join-Path $resultsDir ('capacity-{0}-{1}-cache-{2}-{3}cpu{4}.md' -f $stamp, $Mix, $Cache, $AppCpus, $runSuffix)
 $parsedRates = New-Object Collections.Generic.List[int]
 foreach ($part in @($Rates | ForEach-Object { "$_".Split(',') })) {
     $text = $part.Trim()
@@ -77,10 +86,12 @@ $stopReason = ''
 $build = -not $SkipBuild
 foreach ($rate in $sortedRates) {
     Write-Host ''
-    Write-Host ("==== capacity step: {0} req/s ({1}, cache {2}, {3} CPU, GC {4}) ====" -f $rate, $Mix, $Cache, $AppCpus, $Gc) -ForegroundColor Magenta
+    Write-Host ("==== capacity step: {0} req/s ({1}, cache {2}, {3} CPU, GC {4}, DB pool {5}) ====" -f $rate, $Mix, $Cache, $AppCpus, $Gc,
+        $(if ($DbPool -gt 0) { "$DbPool" } else { 'application default' })) -ForegroundColor Magenta
     $before = @()
     if (Test-Path $resultsDir) { $before = @(Get-ChildItem -Path $resultsDir -Directory | ForEach-Object { $_.Name }) }
-    $arguments = @{ Mix = $Mix; Cache = $Cache; Rate = $rate; Warmup = $Warmup; Duration = $Duration; AppCpus = $AppCpus; Gc = $Gc }
+    $arguments = @{ Mix = $Mix; Cache = $Cache; Rate = $rate; Warmup = $Warmup; Duration = $Duration; AppCpus = $AppCpus; Gc = $Gc; DbPool = $DbPool
+        RedoLogCapacityMiB = $RedoLogCapacityMiB; IoCapacity = $IoCapacity }
     if ($Jfr) { $arguments['Jfr'] = $true }
     if (-not $build) { $arguments['SkipBuild'] = $true }
     $failure = ''
@@ -93,7 +104,7 @@ foreach ($rate in $sortedRates) {
     }
     $build = $false
 
-    $suffix = '-{0}-cache-{1}-{2}rps{3}' -f $Mix, $Cache, $rate, $(if ($Gc -cne 'default') { "-gc-$Gc" } else { '' })
+    $suffix = '-{0}-cache-{1}-{2}rps{3}' -f $Mix, $Cache, $rate, $runSuffix
     $runDir = @(Get-ChildItem -Path $resultsDir -Directory -ErrorAction SilentlyContinue |
         Where-Object { $before -cnotcontains $_.Name -and $_.Name.EndsWith($suffix) } | Sort-Object Name | Select-Object -Last 1)
     $run = $null
@@ -142,7 +153,7 @@ foreach ($rate in $sortedRates) {
 }
 
 $md = New-Object Collections.Generic.List[string]
-$md.Add("# Capacity steps: mix $Mix, cache $Cache, $AppCpus CPU, GC $Gc, $Warmup s warm-up + $Duration s steady per step")
+$md.Add("# Capacity steps: mix $Mix, cache $Cache, $AppCpus CPU, GC $Gc, DB pool $(if ($DbPool -gt 0) { $DbPool } else { 'application default' }), redo log $(if ($RedoLogCapacityMiB -gt 0) { "$RedoLogCapacityMiB MiB" } else { 'default' }), io_capacity $(if ($IoCapacity -gt 0) { $IoCapacity } else { 'default' }), $Warmup s warm-up + $Duration s steady per step")
 $md.Add('')
 $md.Add('| req/s | steady req/s | p50 ms | p95 ms | p99 ms | errors | steady not sent | dropped (whole run) | app CPU (cores) | app CPU ms/req (approx.) | JVM ms/req (JFR) | MySQL CPU | Tomcat busy avg | Hikari pending avg | team cache hit (approx.) | window | verdict | run |')
 $md.Add('|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|---|---|')

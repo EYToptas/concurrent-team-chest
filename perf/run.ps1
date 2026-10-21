@@ -31,6 +31,14 @@ param(
     [ValidateSet('default', 'parallel')]
     [string] $Gc = 'default',
 
+    [ValidateRange(0, 150)]
+    [int] $DbPool = 0,
+
+    [ValidateRange(0, 16384)]
+    [int] $RedoLogCapacityMiB = 0,
+    [ValidateRange(0, 100000)]
+    [int] $IoCapacity = 0,
+
     [switch] $SkipBuild,
 
     [switch] $KeepRunning
@@ -55,6 +63,8 @@ $JfrJavaOptions = '-XX:FlightRecorderOptions=stackdepth=128,maxchunksize=1g ' +
     'jdk.ContainerCPUUsage#period=5s,jdk.ContainerCPUThrottling#period=5s'
 $GcLogOption = '-Xlog:gc:stdout:uptime,level,tags'
 $GcJavaOptions = @{ 'default' = ''; 'parallel' = '-XX:+UseParallelGC' }
+$DbPoolProperty = 'spring.datasource.hikari.maximum-pool-size'
+$MysqlSpareConnections = 10
 $JfrStopSeconds = 120
 $DefaultJwtIssuer = 'https://auth.team-chest.local'
 $DefaultJwtAudience = 'team-chest-api'
@@ -463,8 +473,11 @@ $finishEvery = 0
 $mixChecks = Get-JsonValue $mixes.$Mix 'checks'
 if ($null -ne (Get-JsonValue $mixChecks 'finishEvery')) { $finishEvery = [int] (Get-JsonValue $mixChecks 'finishEvery') }
 
-$runId = '{0}-{1}-cache-{2}-{3}rps{4}' -f (Get-Date -Format 'yyyyMMdd-HHmmss'), $Mix, $Cache, $Rate,
-    $(if ($Gc -cne 'default') { "-gc-$Gc" } else { '' })
+if ($RedoLogCapacityMiB -gt 0 -and $RedoLogCapacityMiB -lt 8) { Pop-Location; throw '-RedoLogCapacityMiB: at least 8 (MySQL''s minimum), or 0' }
+if ($IoCapacity -gt 0 -and $IoCapacity -lt 100) { Pop-Location; throw '-IoCapacity: at least 100 (MySQL''s minimum), or 0' }
+$runId = '{0}-{1}-cache-{2}-{3}rps{4}{5}{6}{7}' -f (Get-Date -Format 'yyyyMMdd-HHmmss'), $Mix, $Cache, $Rate,
+    $(if ($Gc -cne 'default') { "-gc-$Gc" } else { '' }), $(if ($DbPool -gt 0) { "-pool$DbPool" } else { '' }),
+    $(if ($RedoLogCapacityMiB -gt 0) { "-redo$RedoLogCapacityMiB" } else { '' }), $(if ($IoCapacity -gt 0) { "-io$IoCapacity" } else { '' })
 $resultDir = Join-Path (Join-Path $RepoRoot 'perf\results') $runId
 $tokensDir = Join-Path $RepoRoot 'perf\.tokens'
 $secretsDir = Join-Path $RepoRoot '.secrets'
@@ -525,9 +538,11 @@ try {
     }
 
     Write-Step "Run $runId"
-    Write-Host ("    load: {0} req/s, mix {1} ({2}), cache {3}, {4} s warm-up + {5} s steady; app limited to {6} CPU / {7}, GC {8}" -f `
+    Write-Host ("    load: {0} req/s, mix {1} ({2}), cache {3}, {4} s warm-up + {5} s steady; app limited to {6} CPU / {7}, GC {8}, DB pool {9}" -f `
             $Rate, $Mix, (($activeEndpoints | ForEach-Object { '{0} {1}%' -f $_, $sharePercent[$_] }) -join ', '),
-            $Cache, $Warmup, $Duration, $AppCpus, $AppMemory, $Gc)
+            $Cache, $Warmup, $Duration, $AppCpus, $AppMemory, $Gc, $(if ($DbPool -gt 0) { "$DbPool" } else { 'application default' }))
+    Write-Host ("    MySQL: innodb_redo_log_capacity {0}, innodb_io_capacity {1} (durability as in compose.yaml)" -f `
+            $(if ($RedoLogCapacityMiB -gt 0) { "$RedoLogCapacityMiB MiB" } else { 'default' }), $(if ($IoCapacity -gt 0) { "$IoCapacity" } else { 'default' }))
     Write-Host ("    data: {0} teams of {1} ({2} completed, {3} finishing), {4} seeded users, {5} join users needed" -f `
             $teams, $TeamSize, $completedTeams, $finishingTeams, $seededUsers, $joinUsers)
 
@@ -568,11 +583,30 @@ try {
     $env:PERF_CACHE_ENABLED = if ($Cache -ceq 'on') { 'true' } else { 'false' }
     $javaOptions = "-XX:MaxRAMPercentage=75 -XX:+ExitOnOutOfMemoryError $GcLogOption"
     if ($GcJavaOptions[$Gc]) { $javaOptions += " $($GcJavaOptions[$Gc])" }
+    if ($DbPool -gt 0) { $javaOptions += " -D$DbPoolProperty=$DbPool" }
     if ($Jfr) { $javaOptions += " $JfrJavaOptions" }
     $env:PERF_JAVA_TOOL_OPTIONS = $javaOptions
 
     Invoke-Compose -Arguments @('down', '--volumes', '--remove-orphans')
     Invoke-Compose -Arguments @('up', '--detach', '--wait', '--wait-timeout', '300', 'mysql', 'redis')
+    if ($RedoLogCapacityMiB -gt 0 -or $IoCapacity -gt 0) {
+        Write-Step 'InnoDB settings of this run (SET GLOBAL)'
+        $applied = Invoke-Sql 'set-globals.sql' @("redo_log_capacity_mib=$RedoLogCapacityMiB", "io_capacity=$IoCapacity")
+        $applied.GetEnumerator() | ForEach-Object { Write-Host ("    {0} = {1}" -f $_.Key, $_.Value) }
+        if ($RedoLogCapacityMiB -gt 0) {
+            $wanted = [int64] $RedoLogCapacityMiB * 1048576
+            $resized = $null
+            for ($attempt = 0; $attempt -lt 30; $attempt++) {
+                $resized = (Invoke-Sql 'status.sql')['innodb_redo_log_capacity_resized']
+                if ($null -ne $resized -and [int64] $resized -eq $wanted) { break }
+                Start-Sleep -Seconds 2
+            }
+            if ($null -eq $resized -or [int64] $resized -ne $wanted) {
+                throw "innodb_redo_log_capacity was not resized to $RedoLogCapacityMiB MiB (Innodb_redo_log_capacity_resized = $resized)"
+            }
+            Write-Host "    redo log resized to $RedoLogCapacityMiB MiB"
+        }
+    }
     $samplers += Start-Job -ScriptBlock $ClockSampler -ArgumentList (Join-Path $resultDir 'clock.csv'), $RepoRoot, ($Warmup + $Duration + 1800)
     $up = @('up', '--detach', '--wait', '--wait-timeout', '300')
     if (-not $SkipBuild) { $up += '--build' }
@@ -606,9 +640,43 @@ try {
     }
     Write-Host '    the application accepts the load-test tokens'
 
+    $dbPoolMax = $null
+    $poolMetric = Get-AppMetric -Name 'hikaricp.connections.max' -Token $opsToken
+    if ($poolMetric.Status -ceq 'ok' -and $poolMetric.Values.ContainsKey('VALUE')) { $dbPoolMax = [int] $poolMetric.Values['VALUE'] }
+    if ($DbPool -gt 0 -and $dbPoolMax -ne $DbPool) {
+        throw ("-DbPool {0}: the application reports {1} pool connections (hikaricp.connections.max); see 'docker compose logs app'" -f `
+                $DbPool, $(if ($null -eq $dbPoolMax) { 'no' } else { $dbPoolMax }))
+    }
+    Write-Host ("    database connection pool: {0} connections ({1})" -f `
+            $(if ($null -eq $dbPoolMax) { 'unknown' } else { $dbPoolMax }), $(if ($DbPool -gt 0) { '-DbPool' } else { 'application default' }))
+
     Write-Step 'Counters before the load'
     Invoke-Sql 'reset-statements.sql' | Out-Null
     $mysqlBefore = Invoke-Sql 'status.sql'
+    $maxConnections = $mysqlBefore['config.max_connections']
+    if ($null -ne $maxConnections -and $null -ne $dbPoolMax -and $dbPoolMax + $MysqlSpareConnections -gt [int] $maxConnections) {
+        throw ("The pool's {0} connections + {1} spare exceed MySQL's max_connections={2} (compose.yaml)" -f `
+                $dbPoolMax, $MysqlSpareConnections, $maxConnections)
+    }
+    Write-Host ("    MySQL max_connections: {0}" -f $(if ($null -eq $maxConnections) { 'unknown' } else { $maxConnections }))
+    $durability = [ordered]@{ 'config.log_bin' = '1'; 'config.sync_binlog' = '1'; 'config.innodb_flush_log_at_trx_commit' = '1'
+        'config.innodb_doublewrite' = '1' }
+    foreach ($name in $durability.Keys) {
+        if ($null -ne $mysqlBefore[$name] -and "$($mysqlBefore[$name])".Trim() -cne $durability[$name]) {
+            throw "MySQL runs with $($name.Substring(7))=$($mysqlBefore[$name]); load tests need the settings of compose.yaml"
+        }
+    }
+    if ($RedoLogCapacityMiB -gt 0 -and [int64] $mysqlBefore['config.innodb_redo_log_capacity'] -ne [int64] $RedoLogCapacityMiB * 1048576) {
+        throw "innodb_redo_log_capacity is $($mysqlBefore['config.innodb_redo_log_capacity']), not $RedoLogCapacityMiB MiB"
+    }
+    if ($IoCapacity -gt 0 -and [int64] $mysqlBefore['config.innodb_io_capacity'] -ne $IoCapacity) {
+        throw "innodb_io_capacity is $($mysqlBefore['config.innodb_io_capacity']), not $IoCapacity"
+    }
+    Write-Host ("    MySQL: log_bin={0}, sync_binlog={1}, innodb_flush_log_at_trx_commit={2}, doublewrite={3}, redo log capacity {4} MiB, innodb_io_capacity={5}" -f `
+            $mysqlBefore['config.log_bin'], $mysqlBefore['config.sync_binlog'], $mysqlBefore['config.innodb_flush_log_at_trx_commit'],
+            $mysqlBefore['config.innodb_doublewrite'],
+            $(if ($null -ne $mysqlBefore['config.innodb_redo_log_capacity']) { [int64] $mysqlBefore['config.innodb_redo_log_capacity'] / 1048576 } else { 'unknown' }),
+            $mysqlBefore['config.innodb_io_capacity'])
     $redisBefore = Get-RedisInfo
     $timersBefore = Get-AppTimers $opsToken
     $tomcatPool = Get-TomcatPoolName $opsToken
@@ -700,7 +768,8 @@ try {
         runId = $runId
         settings = [ordered]@{ mix = $Mix; sharesPercent = $sharePercent; cache = $Cache; rate = $Rate; warmupSeconds = $Warmup
             durationSeconds = $Duration; minTeams = $MinTeams; appCpus = $AppCpus; appMemory = $AppMemory; jfr = [bool] $Jfr
-            smoke = [bool] $Smoke; gc = $Gc; javaToolOptions = $javaOptions }
+            smoke = [bool] $Smoke; gc = $Gc; javaToolOptions = $javaOptions; dbPool = $DbPool; dbPoolMax = $dbPoolMax
+            redoLogCapacityMiB = $RedoLogCapacityMiB; ioCapacity = $IoCapacity }
         data = [ordered]@{ teams = $teams; completedTeams = $completedTeams; finishingTeams = $finishingTeams; seededUsers = $seededUsers
             joinUsersNeeded = $joinUsers; joinTokens = $meta.joinUsers }
         load = [ordered]@{ startUtc = $loadStart.ToUniversalTime().ToString('o'); endUtc = $loadEnd.ToUniversalTime().ToString('o')

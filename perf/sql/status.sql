@@ -35,11 +35,46 @@ SELECT CONCAT('file_io.', IF(CAMPAIGN_NAME LIKE '%innodb_log_file', 'redo_log', 
 FROM performance_schema.file_summary_by_campaign_name
 WHERE CAMPAIGN_NAME IN ('wait/io/file/innodb/innodb_log_file', 'wait/io/file/sql/binlog');
 
+SELECT LOWER(VARIABLE_NAME), VARIABLE_VALUE
+FROM performance_schema.global_status
+WHERE VARIABLE_NAME IN (
+    'Innodb_redo_log_capacity_resized', 'Innodb_buffer_pool_pages_dirty', 'Innodb_buffer_pool_pages_flushed',
+    'Innodb_buffer_pool_wait_free', 'Innodb_pages_written', 'Innodb_dblwr_writes', 'Innodb_dblwr_pages_written',
+    'Innodb_data_written', 'Innodb_os_log_written')
+UNION ALL
+SELECT 'innodb.checkpoint_age_bytes', CAST(c.VARIABLE_VALUE AS SIGNED) - CAST(k.VARIABLE_VALUE AS SIGNED)
+FROM performance_schema.global_status c
+JOIN performance_schema.global_status k ON k.VARIABLE_NAME = 'Innodb_redo_log_checkpoint_lsn'
+WHERE c.VARIABLE_NAME = 'Innodb_redo_log_current_lsn';
+
+SELECT CONCAT('file_io.', CASE CAMPAIGN_NAME WHEN 'wait/io/file/innodb/innodb_data_file' THEN 'data_file'
+                                          ELSE 'dblwr' END, '.sync_count'), COUNT_MISC
+FROM performance_schema.file_summary_by_campaign_name
+WHERE CAMPAIGN_NAME IN ('wait/io/file/innodb/innodb_data_file', 'wait/io/file/innodb/innodb_dblwr_file')
+UNION ALL
+SELECT CONCAT('file_io.', CASE CAMPAIGN_NAME WHEN 'wait/io/file/innodb/innodb_data_file' THEN 'data_file'
+                                          ELSE 'dblwr' END, '.sync_time_us'), ROUND(SUM_TIMER_MISC / 1000000)
+FROM performance_schema.file_summary_by_campaign_name
+WHERE CAMPAIGN_NAME IN ('wait/io/file/innodb/innodb_data_file', 'wait/io/file/innodb/innodb_dblwr_file')
+UNION ALL
+SELECT CONCAT('file_io.', CASE CAMPAIGN_NAME WHEN 'wait/io/file/innodb/innodb_data_file' THEN 'data_file'
+                                          WHEN 'wait/io/file/innodb/innodb_dblwr_file' THEN 'dblwr'
+                                          WHEN 'wait/io/file/innodb/innodb_log_file' THEN 'redo_log'
+                                          ELSE 'binlog' END, '.write_bytes'), SUM_NUMBER_OF_BYTES_WRITE
+FROM performance_schema.file_summary_by_campaign_name
+WHERE CAMPAIGN_NAME IN ('wait/io/file/innodb/innodb_data_file', 'wait/io/file/innodb/innodb_dblwr_file',
+                     'wait/io/file/innodb/innodb_log_file', 'wait/io/file/sql/binlog');
+
 SELECT 'config.log_bin', @@log_bin
 UNION ALL SELECT 'config.sync_binlog', @@sync_binlog
 UNION ALL SELECT 'config.innodb_flush_log_at_trx_commit', @@innodb_flush_log_at_trx_commit
 UNION ALL SELECT 'config.innodb_buffer_pool_size', @@innodb_buffer_pool_size
-UNION ALL SELECT 'config.innodb_log_writer_threads', @@innodb_log_writer_threads;
+UNION ALL SELECT 'config.innodb_log_writer_threads', @@innodb_log_writer_threads
+UNION ALL SELECT 'config.max_connections', @@max_connections
+UNION ALL SELECT 'config.innodb_redo_log_capacity', @@innodb_redo_log_capacity
+UNION ALL SELECT 'config.innodb_io_capacity', @@innodb_io_capacity
+UNION ALL SELECT 'config.innodb_io_capacity_max', @@innodb_io_capacity_max
+UNION ALL SELECT 'config.innodb_doublewrite', IF(@@innodb_doublewrite IN ('ON', 'DETECT_AND_RECOVER'), 1, 0);
 
 SELECT CONCAT('innodb_', NAME), COUNT
 FROM information_schema.INNODB_METRICS
